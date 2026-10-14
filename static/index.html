@@ -155,6 +155,7 @@
   .rc-excerpt{font-size:13.5px;color:var(--sub);line-height:1.7;max-height:180px;overflow:hidden}
   .review-actions{display:flex;gap:8px;margin-top:22px;flex-wrap:wrap}
   .review-actions .btn{flex:1;min-width:92px}
+  .review-actions .btn.star{flex:0 0 56px;min-width:56px}
   .btn.star.on{background:#ff9500;color:#fff}
   .deck-hint{font-size:11.5px;color:var(--faint);text-align:center;margin-top:12px}
 
@@ -1027,7 +1028,23 @@ function renderHeatmap(){
   grid.innerHTML = html;
 }
 
-loadItems();
+/* ── 深链接：#stats / #timeline / #review / #fav / #tag=xxx 直达视图（手机主屏书签友好） ── */
+function applyHash(){
+  const h = (location.hash || '').replace(/^#\/?/, '');
+  if(!h) return false;
+  if(h === 'fav'){ navTo('fav'); return true; }
+  if(h === 'unread' || h === 'list'){ navTo('unread'); return true; }
+  if(['review','timeline','stats'].includes(h)){ switchView(h); return true; }
+  if(h.startsWith('tag=')){
+    const name = decodeURIComponent(h.slice(4));
+    state.tag = name; state.status = ''; state.fav = 0;
+    syncChips(); switchView('list'); loadItems();
+    return true;
+  }
+  return false;
+}
+window.addEventListener('hashchange', ()=>{ if(!applyHash()) navTo('unread'); });
+if(!applyHash()) loadItems();
 </script>
 </body>
 </html>
