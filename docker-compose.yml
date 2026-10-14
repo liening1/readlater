@@ -1,0 +1,12 @@
+services:
+  readlater:
+    build: .
+    container_name: readlater
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./data:/data          # 数据（SQLite + 图片）落在宿主机 ./data，删容器不丢数据
+    environment:
+      - READLATER_DATA=/data
+      - READLATER_PROXY=${READLATER_PROXY:-}   # 外网抓取代理，国内可设为 http://宿主机IP:7897
+    restart: unless-stopped
