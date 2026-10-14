@@ -2,6 +2,7 @@
 
 启动：见 run.sh / README.md
 """
+import os
 import re
 import sqlite3
 import threading
@@ -20,7 +21,9 @@ from pydantic import BaseModel
 from parser import detect_type, fetch, parse_generic, parse_video, parse_wechat
 
 BASE = Path(__file__).parent
-DATA = BASE / "data"
+# 数据目录可用环境变量覆盖（Docker 下指向挂载卷 /data）
+DATA = Path(os.environ.get("READLATER_DATA") or (BASE / "data"))
+DATA.mkdir(parents=True, exist_ok=True)
 IMG_DIR = DATA / "images"
 DB_PATH = DATA / "readlater.db"
 TZ = timezone(timedelta(hours=8))
@@ -230,7 +233,7 @@ async def upload_image(file: UploadFile = File(...), note: str = Form("")):
         try:
             cur = conn.execute(
                 "INSERT INTO items(type,url,title,cover,content_html,tags,note,status,created_at)"
-                " VALUES('image',?,?,?,?,?,'unread',?)",
+                " VALUES('image',?,?,?,?,?,?,'unread',?)",
                 (f"local:{fname}", fname, f"/data/images/{fname}",
                  f'<img src="/data/images/{fname}" style="max-width:100%">', "", note, now))
             conn.commit()
