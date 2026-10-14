@@ -102,6 +102,7 @@ readlater/
 ├── install.sh         一键创建 venv 并安装依赖
 ├── run.sh             启动（支持 PORT / HOST / READLATER_PROXY）
 ├── Dockerfile         容器化
+├── tools/             开发工具：生成 / 清理演示数据（截图与试用）
 └── data/              数据库与图片（不进版本控制；备份 = 拷走此目录）
 ```
 
