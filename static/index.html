@@ -95,6 +95,11 @@
   .badge{font-size:11px;padding:1px 9px;border-radius:980px;background:#f5f5f7;color:var(--sub);font-weight:500}
   .card-excerpt{font-size:12.5px;color:var(--sub);margin-top:4px;display:-webkit-box;-webkit-line-clamp:1;
     -webkit-box-orient:vertical;overflow:hidden}
+  .card-note{font-size:12.5px;color:var(--txt);background:#f5f5f7;border-radius:8px;padding:5px 9px;margin-top:5px;
+    display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+  .pin{font-size:11px;margin-right:4px}
+  .list-head{display:flex;justify-content:space-between;align-items:center;margin:2px 0 12px;
+    font-size:13px;color:var(--sub)}
   .tags{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
   .tag{font-size:11px;color:#515154;background:#f0f0f2;padding:2px 9px;border-radius:980px}
   .card-acts{display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:flex-start}
@@ -216,6 +221,8 @@
   .sb-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
   .sb-tag-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .sb-count{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .sb-item .sb-count{margin-left:auto}
+  .sb-count:empty{display:none}
   .sb-more{width:20px;height:20px;border-radius:6px;color:var(--sub);opacity:0;font-size:13px;line-height:1;
     transition:opacity 140ms ease,background 140ms ease}
   .sb-empty{font-size:12px;color:var(--faint);padding:6px 10px;line-height:1.7}
@@ -350,12 +357,20 @@
   <aside class="sidebar" id="sidebar">
     <div class="sb-brand">稍后读</div>
     <nav class="sb-nav">
-      <button class="sb-item on" id="navUnread" onclick="navTo('unread')"><span class="sb-ico">◇</span>未读</button>
-      <button class="sb-item" id="navFav" onclick="navTo('fav')"><span class="sb-ico">★</span>收藏</button>
+      <button class="sb-item" id="navToday" onclick="navTo('today')"><span class="sb-ico">◷</span>今日<span class="sb-count" id="cntToday"></span></button>
+      <button class="sb-item on" id="navUnread" onclick="navTo('unread')"><span class="sb-ico">◇</span>未读<span class="sb-count" id="cntUnread"></span></button>
+      <button class="sb-item" id="navAll" onclick="navTo('all')"><span class="sb-ico">▤</span>全部<span class="sb-count" id="cntAll"></span></button>
+      <button class="sb-item" id="navFav" onclick="navTo('fav')"><span class="sb-ico">★</span>收藏<span class="sb-count" id="cntFav"></span></button>
+      <button class="sb-item" id="navNotes" onclick="navTo('notes')"><span class="sb-ico">✎</span>笔记<span class="sb-count" id="cntNotes"></span></button>
       <button class="sb-item" id="navReview" onclick="navTo('review')"><span class="sb-ico">↻</span>回顾</button>
-      <button class="sb-item" id="navTimeline" onclick="navTo('timeline')"><span class="sb-ico">≡</span>时间线</button>
-      <button class="sb-item" id="navStats" onclick="navTo('stats')"><span class="sb-ico">▤</span>统计</button>
+      <button class="sb-item" id="navTimeline" onclick="navTo('timeline')"><span class="sb-ico">▧</span>时间线</button>
+      <button class="sb-item" id="navStats" onclick="navTo('stats')"><span class="sb-ico">▥</span>统计</button>
     </nav>
+    <div class="sb-sec">
+      <div class="sb-sec-head"><span>其他</span></div>
+      <button class="sb-item" id="navArchive" onclick="navTo('archive')"><span class="sb-ico">▢</span>归档<span class="sb-count" id="cntArchived"></span></button>
+      <button class="sb-item" id="navTrash" onclick="navTo('trash')"><span class="sb-ico">⌫</span>回收站<span class="sb-count" id="cntTrash"></span></button>
+    </div>
     <div class="sb-sec">
       <div class="sb-sec-head"><span>标签</span><button class="sb-add" onclick="newTag()" title="新建标签">+</button></div>
       <div id="sbTagList"></div>
@@ -405,6 +420,8 @@
     <button class="icon-btn" onclick="closeReader()" title="关闭">←</button>
     <span class="sp"></span>
     <button class="btn ghost" id="readToggle" onclick="toggleRead()">标为未读</button>
+    <button class="btn ghost" id="pinToggle" onclick="togglePinCurrent()">置顶</button>
+    <button class="btn ghost" id="archiveToggle" onclick="toggleArchiveCurrent()">归档</button>
     <button class="btn ghost" onclick="deleteCurrent()" style="color:var(--danger)">删除</button>
   </div>
   <div class="reader">
@@ -428,8 +445,9 @@
 
 <script>
 const API = '';
-let state = {status:'unread', type:'', tag:'', q:'', fav:0};
-let currentId = null, currentTags = [], noteDirty = false;
+let state = {status:'unread', type:'', tag:'', q:'', fav:0,
+             today:0, notes:0, archived:0, deleted:0};
+let currentId = null, currentItem = null, currentTags = [], noteDirty = false;
 let activeView = 'list', inflight = 0;
 let hmMode = 'collects', hmData = null;
 
@@ -458,25 +476,34 @@ function cardHTML(it){
   const cover = coverUrl(it)
     ? `<img class="thumb" src="${esc(coverUrl(it))}" loading="lazy" data-type="${it.type||'web'}" onerror="phFallback(this)">`
     : phHTML(it);
+  let acts;
+  if(state.deleted){
+    acts = `<button class="icon-btn" title="恢复到原处" onclick="event.stopPropagation();restoreItem(${it.id})">↩</button>
+            <button class="icon-btn del" title="永久删除" onclick="event.stopPropagation();purgeItem(${it.id})">✕</button>`;
+  }else if(state.archived){
+    acts = `<button class="icon-btn" title="取消归档" onclick="event.stopPropagation();unarchiveItem(${it.id})">↩</button>
+            <button class="icon-btn del" title="移入回收站" onclick="event.stopPropagation();delItem(${it.id})">✕</button>`;
+  }else{
+    acts = `<button class="icon-btn ${it.status==='read'?'done':''}" title="已读切换"
+        onclick="event.stopPropagation();quickToggle(${it.id},'${it.status}')">✓</button>
+      <button class="icon-btn" title="归档" onclick="event.stopPropagation();archiveItem(${it.id})">▢</button>
+      <button class="icon-btn del" title="移入回收站" onclick="event.stopPropagation();delItem(${it.id})">✕</button>`;
+  }
   return `<div class="card ${it.status==='read'?'read':''}" onclick="openReader(${it.id})">
     ${cover}
     <div class="card-main">
-      <div class="card-title">${esc(it.title)}</div>
+      <div class="card-title">${it.pinned?'<span class="pin">📌</span>':''}${esc(it.title)}</div>
       <div class="card-meta">
         <span class="badge">${TYPE_CN[it.type]||it.type}</span>
         ${it.author?`<span>${esc(it.author)}</span>`:''}
         <span>${fmtDate(it.created_at)}</span>
         ${it.status==='read'?'<span>已读</span>':''}
       </div>
+      ${it.note?`<div class="card-note">${esc(it.note)}</div>`:''}
       ${it.excerpt?`<div class="card-excerpt">${esc(it.excerpt)}</div>`:''}
       ${it.tags.length?`<div class="tags">${it.tags.map(t=>`<span class="tag">#${esc(t)}</span>`).join('')}</div>`:''}
     </div>
-    <div class="card-acts">
-      <button class="icon-btn ${it.status==='read'?'done':''}" title="已读切换"
-        onclick="event.stopPropagation();quickToggle(${it.id},'${it.status}')">✓</button>
-      <button class="icon-btn del" title="删除"
-        onclick="event.stopPropagation();delItem(${it.id})">✕</button>
-    </div>
+    <div class="card-acts">${acts}</div>
   </div>`;
 }
 function phHTML(it){
@@ -491,6 +518,10 @@ function phFallback(el){
 
 async function loadItems(){
   const p = new URLSearchParams();
+  if(state.deleted) p.set('deleted', '1');
+  if(state.archived) p.set('archived', '1');
+  if(state.today) p.set('today', '1');
+  if(state.notes) p.set('notes', '1');
   if(state.fav) p.set('favorite', '1');
   if(state.status) p.set('status', state.status);
   if(state.type) p.set('type', state.type);
@@ -499,10 +530,24 @@ async function loadItems(){
   try{
     const data = await api('/api/items?'+p.toString());
     const box = document.getElementById('listView');
-    box.innerHTML = data.items.length
+    let head = '';
+    if(state.deleted){
+      head = `<div class="list-head"><span>回收站 · ${data.items.length} 条</span>
+        <button class="btn ghost" onclick="emptyTrash()" style="color:var(--danger)">清空回收站</button></div>`;
+    }else if(state.archived){
+      head = `<div class="list-head"><span>归档 · ${data.items.length} 条</span></div>`;
+    }else if(state.notes){
+      head = `<div class="list-head"><span>所有笔记 · ${data.items.length} 条</span></div>`;
+    }
+    const empty = state.deleted ? '回收站是空的。'
+      : state.archived ? '还没有归档的内容。读完不想再看时，点卡片右侧 ▢ 归档。'
+      : state.notes ? '还没有写过笔记。打开任意条目，在底部「我的想法」里写一句，就会汇总到这里。'
+      : state.today ? '今天还没有收藏。看到好文章就粘进来。'
+      : '这里空空的。粘贴一个链接开始收集，或在浏览器里装 bookmarklet 一键收。';
+    box.innerHTML = head + (data.items.length
       ? data.items.map(cardHTML).join('')
-      : `<div class="empty"><p style="font-size:32px">☕</p><p>这里空空的。粘贴一个链接开始收集，或在 Mac 浏览器里装 bookmarklet 一键收。</p></div>`;
-    loadTags();
+      : `<div class="empty"><p style="font-size:32px">☕</p><p>${empty}</p></div>`);
+    loadTags(); loadCounts();
     syncChips(); syncSidebar();
   }catch(e){ toast('加载失败：'+e.message); }
 }
@@ -546,39 +591,65 @@ function syncChips(){
   const ts = document.getElementById('tagSel'); if(ts) ts.value = state.tag;
   const ys = document.getElementById('typeSel'); if(ys) ys.value = state.type;
 }
+function currentScope(){
+  if(state.deleted) return 'trash';
+  if(state.archived) return 'archive';
+  if(state.notes) return 'notes';
+  if(state.fav) return 'fav';
+  if(state.today) return 'today';
+  return state.status === 'unread' ? 'unread' : 'all';
+}
+async function loadCounts(){
+  let c;
+  try{ c = await api('/api/counts'); }catch(e){ return; }
+  const map = {cntToday:c.today, cntUnread:c.unread, cntAll:c.all, cntFav:c.starred,
+               cntNotes:c.notes, cntArchived:c.archived, cntTrash:c.trash};
+  for(const [id, v] of Object.entries(map)){
+    const el = document.getElementById(id);
+    if(el) el.textContent = v ? v : '';
+  }
+}
 function syncSidebar(){
   const set = (id, on)=>{ const el = document.getElementById(id); if(el) el.classList.toggle('on', !!on); };
-  set('navUnread', activeView==='list' && state.status==='unread' && !state.tag && !state.fav);
-  set('navFav', activeView==='list' && !!state.fav);
+  const scope = activeView === 'list' ? currentScope() : '';
+  ['today','unread','all','fav','notes','archive','trash'].forEach(k=>{
+    const id = 'nav' + k[0].toUpperCase() + k.slice(1);
+    set(id, scope === k && !state.tag);
+  });
   set('navReview', activeView==='review');
   set('navTimeline', activeView==='timeline');
   set('navStats', activeView==='stats');
   document.querySelectorAll('.sb-tag').forEach(r=>{
-    const on = activeView==='list' && r.dataset.name === state.tag;
-    r.classList.toggle('on', on);
+    r.classList.toggle('on', activeView==='list' && r.dataset.name === state.tag);
   });
 }
-function navTo(kind){
-  if(kind==='unread'){
-    state.status='unread'; state.tag=''; state.fav=0; state.type='';
-    syncChips(); switchView('list'); loadItems();
-  }else if(kind==='fav'){
-    state.fav=1; state.status=''; state.tag=''; state.type='';
-    syncChips(); switchView('list'); loadItems();
-  }else if(kind==='review'){ switchView('review'); }
-  else if(kind==='timeline'){ switchView('timeline'); }
-  else if(kind==='stats'){ switchView('stats'); }
+function navTo(scope){
+  state.type=''; state.tag=''; state.q=''; state.status='';
+  state.fav=0; state.today=0; state.notes=0; state.archived=0; state.deleted=0;
+  const qi = document.getElementById('qInput'); if(qi) qi.value='';
+  if(scope==='unread') state.status='unread';
+  else if(scope==='today') state.today=1;
+  else if(scope==='fav') state.fav=1;
+  else if(scope==='notes') state.notes=1;
+  else if(scope==='archive') state.archived=1;
+  else if(scope==='trash') state.deleted=1;
+  if(scope==='review'){ switchView('review'); }
+  else if(scope==='timeline'){ switchView('timeline'); }
+  else if(scope==='stats'){ switchView('stats'); }
+  else { syncChips(); switchView('list'); loadItems(); }
   if(window.innerWidth<=900) toggleDrawer(false);
 }
 function toggleFavChip(){
   state.fav = state.fav ? 0 : 1;
-  if(state.fav) state.status = '';
+  if(state.fav){ state.status = ''; state.today = 0; state.notes = 0;
+    state.archived = 0; state.deleted = 0; }
   syncChips(); syncSidebar();
   loadItems();
 }
 function filterByTag(name){
   state.tag = (state.tag === name) ? '' : name;
-  if(state.tag){ state.status = ''; state.fav = 0; }
+  if(state.tag){ state.status = ''; state.fav = 0; state.today = 0; state.notes = 0;
+    state.archived = 0; state.deleted = 0; }
   syncChips();
   switchView('list');
   loadItems();
@@ -719,14 +790,15 @@ document.getElementById('urlInput').addEventListener('keydown', e=>{
 let qTimer;
 function searchDebounce(){ clearTimeout(qTimer); qTimer=setTimeout(()=>{state.q=document.getElementById('qInput').value.trim(); loadItems();},350); }
 function setStatus(s){
-  state.status = s; state.fav = 0;
+  state.status = s; state.fav = 0; state.today = 0; state.notes = 0;
+  state.archived = 0; state.deleted = 0;
   syncChips(); syncSidebar();
   loadItems();
 }
 
 async function openReader(id){
   const it = await api('/api/items/'+id);
-  currentId = id; currentTags = it.tags.slice(); noteDirty = false;
+  currentId = id; currentItem = it; currentTags = it.tags.slice(); noteDirty = false;
   document.getElementById('rTitle').textContent = it.title;
   document.getElementById('rByline').innerHTML =
     `<span>${TYPE_CN[it.type]||it.type}</span>` +
@@ -739,6 +811,8 @@ async function openReader(id){
   document.getElementById('rNote').value = it.note || '';
   renderTags();
   updateReadBtn(it.status);
+  updatePinBtn(it);
+  updateArchiveBtn(it);
   document.getElementById('overlay').classList.add('show');
   document.body.style.overflow = 'hidden';
   // 不自动标已读：显式 ✓ / 按钮 / 点「查看原文」才标记，避免返回列表时卡片被「未读」筛选掉
@@ -762,6 +836,33 @@ function updateReadBtn(st){
   document.getElementById('readToggle').textContent = st==='read' ? '标为未读' : '标为已读';
   document.getElementById('readToggle').dataset.st = st;
 }
+function updatePinBtn(it){
+  const b = document.getElementById('pinToggle');
+  if(b) b.textContent = it.pinned ? '取消置顶' : '置顶';
+}
+function updateArchiveBtn(it){
+  const b = document.getElementById('archiveToggle');
+  if(b) b.textContent = it.archived_at ? '取消归档' : '归档';
+}
+async function togglePinCurrent(){
+  if(!currentItem) return;
+  try{
+    const r = await patchItem(currentId, {pinned: currentItem.pinned ? 0 : 1});
+    currentItem = r; updatePinBtn(r);
+    toast(r.pinned ? '已置顶' : '已取消置顶');
+    if(activeView==='list') loadItems();
+  }catch(e){ toast('操作失败：'+e.message); }
+}
+async function toggleArchiveCurrent(){
+  if(!currentItem) return;
+  const to = currentItem.archived_at ? 0 : 1;
+  try{
+    const r = await patchItem(currentId, {archived: to});
+    currentItem = r; updateArchiveBtn(r);
+    toast(to ? '已归档' : '已取消归档');
+    closeReader();
+  }catch(e){ toast('操作失败：'+e.message); }
+}
 async function toggleRead(){
   const to = document.getElementById('readToggle').dataset.st==='read' ? 'unread':'read';
   try{
@@ -775,17 +876,50 @@ async function quickToggle(id, st){
   catch(e){ toast('操作失败：'+e.message); }
 }
 async function delItem(id){
-  if(!confirm('确定删除这条收藏？')) return;
-  await api('/api/items/'+id, {method:'DELETE'});
-  toast('已删除'); loadItems();
+  try{ await api('/api/items/'+id, {method:'DELETE'}); }
+  catch(e){ toast('操作失败：'+e.message); return; }
+  toast('已移入回收站（可在回收站恢复）');
+  loadItems();
+}
+async function archiveItem(id){
+  try{ await patchItem(id, {archived:1}); }
+  catch(e){ toast('操作失败：'+e.message); return; }
+  toast('已归档');
+  loadItems();
+}
+async function unarchiveItem(id){
+  try{ await patchItem(id, {archived:0}); }
+  catch(e){ toast('操作失败：'+e.message); return; }
+  toast('已取消归档');
+  loadItems();
+}
+async function restoreItem(id){
+  try{ await api('/api/items/'+id+'/restore', {method:'POST'}); }
+  catch(e){ toast('操作失败：'+e.message); return; }
+  toast('已恢复到原处');
+  loadItems();
+}
+async function purgeItem(id){
+  if(!confirm('永久删除这条？不可恢复。')) return;
+  try{ await api('/api/items/'+id+'/purge', {method:'DELETE'}); }
+  catch(e){ toast('操作失败：'+e.message); return; }
+  toast('已永久删除');
+  loadItems();
+}
+async function emptyTrash(){
+  if(!confirm('清空回收站？其中所有条目将被永久删除，不可恢复。')) return;
+  try{ const r = await api('/api/trash/empty', {method:'POST'});
+    toast(`已永久删除 ${r.purged} 条`); }
+  catch(e){ toast('操作失败：'+e.message); }
+  loadItems();
 }
 async function deleteCurrent(){
-  if(!confirm('确定删除这条收藏？')) return;
+  if(!confirm('删除这条收藏？会移入回收站，可从回收站恢复。')) return;
   try{ await api('/api/items/'+currentId, {method:'DELETE'}); }
   catch(e){ toast('删除失败：'+e.message); return; }
   document.getElementById('overlay').classList.remove('show');
   document.body.style.overflow = '';
-  toast('已删除');
+  toast('已移入回收站');
   if(activeView==='review') loadReview(); else if(activeView==='timeline') loadDay(); else if(activeView==='stats') loadStats(); else loadItems();
 }
 function renderTags(){

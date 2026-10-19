@@ -54,7 +54,16 @@ def db() -> sqlite3.Connection:
             note TEXT DEFAULT '',
             status TEXT DEFAULT 'unread',
             created_at TEXT NOT NULL,
-            read_at TEXT)""")
+            read_at TEXT,
+            deleted_at TEXT,
+            archived_at TEXT,
+            pinned INTEGER DEFAULT 0)""")
+    # 老库自动迁移：补齐后加的列
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(items)").fetchall()}
+    for name, ddl in (("deleted_at", "TEXT"), ("archived_at", "TEXT"),
+                      ("pinned", "INTEGER DEFAULT 0")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE items ADD COLUMN {name} {ddl}")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS review_state(
             item_id INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
@@ -187,6 +196,8 @@ class PatchBody(BaseModel):
     status: Optional[str] = None
     tags: Optional[list[str]] = None
     note: Optional[str] = None
+    archived: Optional[int] = None   # 1 归档 / 0 取消归档
+    pinned: Optional[int] = None     # 1 置顶 / 0 取消
 
 
 class ReviewFeedback(BaseModel):
@@ -245,9 +256,21 @@ async def upload_image(file: UploadFile = File(...), note: str = Form("")):
 
 @app.get("/api/items")
 def list_items(status: str = "", type: str = "", tag: str = "", q: str = "",
-               favorite: int = 0, limit: int = 50, offset: int = 0):
+               favorite: int = 0, today: int = 0, notes: int = 0,
+               archived: int = 0, deleted: int = 0,
+               limit: int = 50, offset: int = 0):
     sql = "SELECT * FROM items WHERE 1=1"
     args: list = []
+    if deleted:                       # 回收站
+        sql += " AND deleted_at IS NOT NULL"
+    else:
+        sql += " AND deleted_at IS NULL"
+        sql += " AND archived_at IS NOT NULL" if archived else " AND archived_at IS NULL"
+    if today:
+        sql += " AND substr(created_at,1,10)=?"
+        args.append(datetime.now(TZ).strftime("%Y-%m-%d"))
+    if notes:
+        sql += " AND note != ''"
     if favorite:
         sql += " AND id IN (SELECT item_id FROM review_state WHERE favorite=1)"
     if status in ("unread", "read"):
@@ -262,7 +285,7 @@ def list_items(status: str = "", type: str = "", tag: str = "", q: str = "",
     if q:
         sql += " AND (title LIKE ? OR excerpt LIKE ? OR note LIKE ?)"
         args += [f"%{q}%"] * 3
-    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+    sql += " ORDER BY pinned DESC, id DESC LIMIT ? OFFSET ?"
     args += [min(limit, 200), offset]
     conn = db()
     try:
@@ -277,7 +300,8 @@ def list_tags():
     """标签列表：计数 + 元数据（颜色/置顶），排序 置顶 → 计数。"""
     conn = db()
     try:
-        rows = conn.execute("SELECT tags FROM items WHERE tags != ''").fetchall()
+        rows = conn.execute(
+            "SELECT tags FROM items WHERE tags != '' AND deleted_at IS NULL").fetchall()
         meta = {r["name"]: dict(r) for r in conn.execute("SELECT * FROM tags").fetchall()}
     finally:
         conn.close()
@@ -426,6 +450,13 @@ def patch_item(item_id: int, body: PatchBody):
                 touch_tags(conn, tag_list)
             if body.note is not None:
                 conn.execute("UPDATE items SET note=? WHERE id=?", (body.note, item_id))
+            if body.archived is not None:
+                conn.execute("UPDATE items SET archived_at=? WHERE id=?",
+                             (datetime.now(TZ).isoformat(timespec="seconds")
+                              if body.archived else None, item_id))
+            if body.pinned is not None:
+                conn.execute("UPDATE items SET pinned=? WHERE id=?",
+                             (1 if body.pinned else 0, item_id))
             conn.commit()
             r = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
         finally:
@@ -435,16 +466,91 @@ def patch_item(item_id: int, body: PatchBody):
 
 @app.delete("/api/items/{item_id}")
 def delete_item(item_id: int):
+    """软删除：移入回收站，可恢复。"""
     with _DB_LOCK:
         conn = db()
         try:
-            cur = conn.execute("DELETE FROM items WHERE id=?", (item_id,))
+            cur = conn.execute(
+                "UPDATE items SET deleted_at=? WHERE id=? AND deleted_at IS NULL",
+                (datetime.now(TZ).isoformat(timespec="seconds"), item_id))
+            conn.commit()
+        finally:
+            conn.close()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "条目不存在或已在回收站")
+    return {"deleted": item_id, "soft": True}
+
+
+@app.post("/api/items/{item_id}/restore")
+def restore_item(item_id: int):
+    with _DB_LOCK:
+        conn = db()
+        try:
+            cur = conn.execute("UPDATE items SET deleted_at=NULL WHERE id=?", (item_id,))
             conn.commit()
         finally:
             conn.close()
     if cur.rowcount == 0:
         raise HTTPException(404, "条目不存在")
-    return {"deleted": item_id}
+    return {"restored": item_id}
+
+
+@app.delete("/api/items/{item_id}/purge")
+def purge_item(item_id: int):
+    """永久删除（仅回收站内条目）。"""
+    with _DB_LOCK:
+        conn = db()
+        try:
+            conn.execute("DELETE FROM review_state WHERE item_id=?", (item_id,))
+            cur = conn.execute("DELETE FROM items WHERE id=? AND deleted_at IS NOT NULL", (item_id,))
+            conn.commit()
+        finally:
+            conn.close()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "条目不存在或不在回收站")
+    return {"purged": item_id}
+
+
+@app.post("/api/trash/empty")
+def empty_trash():
+    with _DB_LOCK:
+        conn = db()
+        try:
+            ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM items WHERE deleted_at IS NOT NULL").fetchall()]
+            for i in ids:
+                conn.execute("DELETE FROM review_state WHERE item_id=?", (i,))
+            conn.execute("DELETE FROM items WHERE deleted_at IS NOT NULL")
+            conn.commit()
+        finally:
+            conn.close()
+    return {"purged": len(ids)}
+
+
+@app.get("/api/counts")
+def counts():
+    """侧栏计数：一次取全，避免多次请求。"""
+    conn = db()
+    try:
+        def one(sql, *args):
+            return conn.execute(sql, args).fetchone()["c"]
+        alive = "FROM items WHERE deleted_at IS NULL AND archived_at IS NULL"
+        return {
+            "today": one("SELECT COUNT(*) c " + alive + " AND substr(created_at,1,10)=?",
+                         datetime.now(TZ).strftime("%Y-%m-%d")),
+            "unread": one("SELECT COUNT(*) c " + alive + " AND status='unread'"),
+            "all": one("SELECT COUNT(*) c " + alive),
+            "starred": one("""SELECT COUNT(*) c FROM items i
+                              JOIN review_state rs ON rs.item_id=i.id
+                              WHERE i.deleted_at IS NULL AND i.archived_at IS NULL
+                                AND rs.favorite=1"""),
+            "notes": one("SELECT COUNT(*) c " + alive + " AND note != ''"),
+            "archived": one("""SELECT COUNT(*) c FROM items
+                               WHERE deleted_at IS NULL AND archived_at IS NOT NULL"""),
+            "trash": one("SELECT COUNT(*) c FROM items WHERE deleted_at IS NOT NULL"),
+        }
+    finally:
+        conn.close()
 
 
 # ---------- 每日回顾（Readwise 式间隔重现） ----------
@@ -461,9 +567,10 @@ def review_due(n: int = 5):
             """SELECT i.*, IFNULL(rs.seen_count,0) AS seen_count,
                       IFNULL(rs.favorite,0) AS favorite, rs.last_seen
                FROM items i LEFT JOIN review_state rs ON rs.item_id = i.id
-               WHERE rs.item_id IS NULL
+               WHERE i.deleted_at IS NULL AND i.archived_at IS NULL
+                 AND (rs.item_id IS NULL
                   OR (rs.archived = 0 AND (rs.next_due IS NULL
-                      OR substr(rs.next_due,1,10) <= date('now','localtime')))
+                      OR substr(rs.next_due,1,10) <= date('now','localtime'))))
                ORDER BY favorite DESC,
                         CASE WHEN rs.last_seen IS NULL THEN 0 ELSE 1 END,
                         rs.last_seen ASC
@@ -563,16 +670,19 @@ def stats_overview(weeks: int = 53):
     conn = db()
     try:
         collects = {r["d"]: r["c"] for r in conn.execute(
-            "SELECT substr(created_at,1,10) d, COUNT(*) c FROM items GROUP BY d").fetchall()}
+            "SELECT substr(created_at,1,10) d, COUNT(*) c FROM items "
+            "WHERE deleted_at IS NULL GROUP BY d").fetchall()}
         reviews = {r["d"]: r["c"] for r in conn.execute(
             "SELECT substr(last_seen,1,10) d, COUNT(*) c FROM review_state "
             "WHERE last_seen IS NOT NULL GROUP BY d").fetchall()}
-        total = conn.execute("SELECT COUNT(*) c FROM items").fetchone()["c"]
+        total = conn.execute(
+            "SELECT COUNT(*) c FROM items WHERE deleted_at IS NULL").fetchone()["c"]
         read = conn.execute(
-            "SELECT COUNT(*) c FROM items WHERE status='read'").fetchone()["c"]
+            "SELECT COUNT(*) c FROM items WHERE status='read' AND deleted_at IS NULL").fetchone()["c"]
         by_type = {r["type"]: r["c"] for r in conn.execute(
-            "SELECT type, COUNT(*) c FROM items GROUP BY type").fetchall()}
-        tag_rows = conn.execute("SELECT tags FROM items WHERE tags != ''").fetchall()
+            "SELECT type, COUNT(*) c FROM items WHERE deleted_at IS NULL GROUP BY type").fetchall()}
+        tag_rows = conn.execute(
+            "SELECT tags FROM items WHERE tags != '' AND deleted_at IS NULL").fetchall()
         streak_days = {r["d"] for r in conn.execute(
             "SELECT DISTINCT substr(last_seen,1,10) d FROM review_state "
             "WHERE last_seen IS NOT NULL").fetchall()}
@@ -617,12 +727,13 @@ def timeline_calendar(month: str = ""):
             cell[k] += 1
 
         for r in conn.execute(
-                "SELECT substr(created_at,1,10) d FROM items WHERE substr(created_at,1,7)=?",
-                (month,)):
+                "SELECT substr(created_at,1,10) d FROM items "
+                "WHERE deleted_at IS NULL AND substr(created_at,1,7)=?", (month,)):
             bump(r["d"], "collects")
         for r in conn.execute(
                 "SELECT substr(read_at,1,10) d FROM items "
-                "WHERE read_at IS NOT NULL AND substr(read_at,1,7)=?", (month,)):
+                "WHERE read_at IS NOT NULL AND deleted_at IS NULL "
+                "AND substr(read_at,1,7)=?", (month,)):
             bump(r["d"], "reads")
         for r in conn.execute(
                 "SELECT substr(last_seen,1,10) d FROM review_state "
@@ -643,17 +754,18 @@ def timeline_day(date: str = ""):
         events = []
         for r in conn.execute(
                 "SELECT id,type,title,author,excerpt,tags,note,created_at ts FROM items "
-                "WHERE substr(created_at,1,10)=?", (date,)):
+                "WHERE deleted_at IS NULL AND substr(created_at,1,10)=?", (date,)):
             d = row_dict(r); d["kind"] = "collect"; d["time"] = r["ts"]; events.append(d)
         for r in conn.execute(
                 "SELECT i.id,i.type,i.title,i.author,i.excerpt,i.tags,i.note,i.read_at ts "
-                "FROM items i WHERE i.read_at IS NOT NULL AND substr(i.read_at,1,10)=?",
-                (date,)):
+                "FROM items i WHERE i.read_at IS NOT NULL AND i.deleted_at IS NULL "
+                "AND substr(i.read_at,1,10)=?", (date,)):
             d = row_dict(r); d["kind"] = "read"; d["time"] = r["ts"]; events.append(d)
         for r in conn.execute(
                 "SELECT i.id,i.type,i.title,i.author,i.excerpt,i.tags,i.note,rs.last_seen ts "
                 "FROM review_state rs JOIN items i ON i.id=rs.item_id "
-                "WHERE rs.last_seen IS NOT NULL AND substr(rs.last_seen,1,10)=?", (date,)):
+                "WHERE rs.last_seen IS NOT NULL AND i.deleted_at IS NULL "
+                "AND substr(rs.last_seen,1,10)=?", (date,)):
             d = row_dict(r); d["kind"] = "review"; d["time"] = r["ts"]; events.append(d)
     finally:
         conn.close()
