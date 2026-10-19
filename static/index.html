@@ -100,6 +100,33 @@
   .pin{font-size:11px;margin-right:4px}
   .list-head{display:flex;justify-content:space-between;align-items:center;margin:2px 0 12px;
     font-size:13px;color:var(--sub)}
+
+  /* ── 卡片墙视图（大封面） ── */
+  .view-grid #listView{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));
+    gap:14px;align-items:stretch}
+  .view-grid #listView .card,.view-grid #listView .gcard{margin-bottom:0}
+  .view-grid #listView .empty,.view-grid #listView .list-head{grid-column:1 / -1}
+  .gcard{background:var(--card);border-radius:var(--r);overflow:hidden;cursor:pointer;
+    box-shadow:var(--shadow-sm);display:flex;flex-direction:column;
+    transition:transform 160ms var(--ease-out),box-shadow 160ms var(--ease-out);
+    animation:cardIn 300ms var(--ease-out) backwards}
+  .gcard .gc-cover{position:relative;aspect-ratio:16/10;background:#f5f5f7;overflow:hidden}
+  .gcard .gc-cover img{width:100%;height:100%;object-fit:cover;display:block}
+  .gcard .gc-ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+    font-size:32px;color:#fff;font-weight:600}
+  .gcard .gc-type{position:absolute;left:10px;top:10px;font-size:10.5px;padding:2px 9px;border-radius:980px;
+    background:rgba(255,255,255,.92);color:var(--txt);font-weight:500}
+  .gcard .gc-pin{position:absolute;right:10px;top:8px;font-size:12px}
+  .gcard .gc-acts{position:absolute;right:8px;bottom:8px;display:flex;gap:6px;opacity:0;
+    transition:opacity 140ms ease}
+  .gcard .gc-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px;flex:1}
+  .gcard .gc-title{font-size:14.5px;font-weight:600;line-height:1.45;letter-spacing:-.012em;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .gcard.read .gc-title{color:var(--sub)}
+  .gcard .gc-meta{font-size:11.5px;color:var(--sub);display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+    font-variant-numeric:tabular-nums}
+  .gcard .gc-note{font-size:12px;color:var(--txt);background:#f5f5f7;border-radius:8px;padding:5px 8px;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .tags{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
   .tag{font-size:11px;color:#515154;background:#f0f0f2;padding:2px 9px;border-radius:980px}
   .card-acts{display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:flex-start}
@@ -304,6 +331,8 @@
 
   @media (hover:hover) and (pointer:fine){
     .card:hover{transform:translateY(-1px);box-shadow:var(--shadow-md)}
+    .gcard:hover{transform:translateY(-2px);box-shadow:var(--shadow-md)}
+    .gcard:hover .gc-acts{opacity:1}
     .chip:not(.on):hover{background:#e8e8ed}
     .icon-btn:hover{background:#e8e8ed;color:var(--txt)}
     .icon-btn.del:hover{color:var(--danger);background:#fdecec}
@@ -337,8 +366,9 @@
   }
   @media (prefers-reduced-motion:reduce){
     #listView .card{animation:none}
-    .card,.btn,.chip,.icon-btn,.tabs button,.seg button,.hm-cell,.cal-cell,.tl-card,.sb-item,.sb-tag,.sb-add,.sb-more,.pop,.sidebar,.scrim{transition-duration:0ms}
-    .card:hover,.btn:active,.icon-btn:active,.hm-cell:hover,.cal-cell:active,.tl-card:hover,.sb-item:active,.sb-tag:active,.sb-add:active{transform:none}
+    .card,.btn,.chip,.icon-btn,.tabs button,.seg button,.hm-cell,.cal-cell,.tl-card,.sb-item,.sb-tag,.sb-add,.sb-more,.pop,.sidebar,.scrim,.gcard{transition-duration:0ms}
+    .gcard{animation:none}
+    .card:hover,.btn:active,.icon-btn:active,.hm-cell:hover,.cal-cell:active,.tl-card:hover,.sb-item:active,.sb-tag:active,.sb-add:active,.gcard:hover{transform:none}
   }
   @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))){
     .topbar,.reader-bar,.card,.num,.hm-card,.review-card,.icon-btn,.chip,.tabs,.seg,.btn.ghost{background:rgba(255,255,255,.92)}
@@ -405,6 +435,10 @@
         <option value="">全部标签</option>
       </select>
       <input class="search" id="qInput" placeholder="搜索标题 / 摘要 / 笔记" oninput="searchDebounce()">
+      <div class="seg" style="margin-left:auto">
+        <button id="viewList" class="on" onclick="setViewMode('list')" title="列表视图">列表</button>
+        <button id="viewGrid" onclick="setViewMode('grid')" title="卡片视图">卡片</button>
+      </div>
     </div>
 
     <main class="wrap" id="listView"></main>
@@ -450,6 +484,8 @@ let state = {status:'unread', type:'', tag:'', q:'', fav:0,
 let currentId = null, currentItem = null, currentTags = [], noteDirty = false;
 let activeView = 'list', inflight = 0;
 let hmMode = 'collects', hmData = null;
+let viewMode = 'list';
+try{ viewMode = localStorage.getItem('rl_view_mode') || 'list'; }catch(e){}
 
 function toast(msg){
   const t = document.getElementById('toast');
@@ -509,10 +545,64 @@ function cardHTML(it){
 function phHTML(it){
   return `<div class="thumb ph c-${it.type||'web'}">${TYPE_ICON[it.type]||'链'}</div>`;
 }
+/* ── 视图模式：列表 / 卡片墙 ── */
+function setViewMode(m){
+  viewMode = m;
+  try{ localStorage.setItem('rl_view_mode', m); }catch(e){}
+  applyViewMode();
+  if(activeView === 'list') loadItems();
+}
+function applyViewMode(){
+  document.body.classList.toggle('view-grid', viewMode === 'grid');
+  const l = document.getElementById('viewList'), g = document.getElementById('viewGrid');
+  if(l) l.classList.toggle('on', viewMode === 'list');
+  if(g) g.classList.toggle('on', viewMode === 'grid');
+}
+function cardHTMLFor(it){ return viewMode === 'grid' ? gcardHTML(it) : cardHTML(it); }
+function gcardHTML(it){
+  const cover = it.cover
+    ? `<img src="${esc(it.cover)}" loading="lazy" data-type="${it.type||'web'}" onerror="phFallback(this)">`
+    : `<div class="gc-ph c-${it.type||'web'}">${TYPE_ICON[it.type]||'链'}</div>`;
+  let acts;
+  if(state.deleted){
+    acts = `<button class="icon-btn" title="恢复" onclick="event.stopPropagation();restoreItem(${it.id})">↩</button>
+      <button class="icon-btn del" title="永久删除" onclick="event.stopPropagation();purgeItem(${it.id})">✕</button>`;
+  }else if(state.archived){
+    acts = `<button class="icon-btn" title="取消归档" onclick="event.stopPropagation();unarchiveItem(${it.id})">↩</button>
+      <button class="icon-btn del" title="移入回收站" onclick="event.stopPropagation();delItem(${it.id})">✕</button>`;
+  }else{
+    acts = `<button class="icon-btn ${it.status==='read'?'done':''}" title="已读切换"
+        onclick="event.stopPropagation();quickToggle(${it.id},'${it.status}')">✓</button>
+      <button class="icon-btn" title="归档" onclick="event.stopPropagation();archiveItem(${it.id})">▢</button>
+      <button class="icon-btn del" title="移入回收站" onclick="event.stopPropagation();delItem(${it.id})">✕</button>`;
+  }
+  return `<div class="gcard ${it.status==='read'?'read':''}" onclick="openReader(${it.id})">
+    <div class="gc-cover">
+      ${cover}
+      <span class="gc-type">${TYPE_CN[it.type]||it.type}</span>
+      ${it.pinned?'<span class="gc-pin">📌</span>':''}
+      <div class="gc-acts">${acts}</div>
+    </div>
+    <div class="gc-body">
+      <div class="gc-title">${esc(it.title)}</div>
+      <div class="gc-meta"><span>${fmtDate(it.created_at)}</span>${it.author?`<span>· ${esc(it.author)}</span>`:''}${it.status==='read'?'<span>· 已读</span>':''}</div>
+      ${it.note?`<div class="gc-note">${esc(it.note)}</div>`:''}
+      ${it.tags.length?`<div class="tags">${it.tags.map(t=>`<span class="tag">#${esc(t)}</span>`).join('')}</div>`:''}
+    </div>
+  </div>`;
+}
 function phFallback(el){
+  const type = el.dataset.type || 'web';
+  if(el.closest('.gc-cover')){
+    const big = document.createElement('div');
+    big.className = 'gc-ph c-' + type;
+    big.textContent = TYPE_ICON[type] || '链';
+    el.replaceWith(big);
+    return;
+  }
   const d = document.createElement('div');
-  d.className = 'thumb ph c-' + (el.dataset.type || 'web');
-  d.textContent = TYPE_ICON[el.dataset.type] || '链';
+  d.className = 'thumb ph c-' + type;
+  d.textContent = TYPE_ICON[type] || '链';
   el.replaceWith(d);
 }
 
@@ -545,7 +635,7 @@ async function loadItems(){
       : state.today ? '今天还没有收藏。看到好文章就粘进来。'
       : '这里空空的。粘贴一个链接开始收集，或在浏览器里装 bookmarklet 一键收。';
     box.innerHTML = head + (data.items.length
-      ? data.items.map(cardHTML).join('')
+      ? data.items.map(cardHTMLFor).join('')
       : `<div class="empty"><p style="font-size:32px">☕</p><p>${empty}</p></div>`);
     loadTags(); loadCounts();
     syncChips(); syncSidebar();
@@ -1176,6 +1266,12 @@ function renderHeatmap(){
 function applyHash(){
   const h = (location.hash || '').replace(/^#\/?/, '');
   if(!h) return false;
+  if(h === 'grid'){                      // #grid 直达卡片墙视图
+    viewMode = 'grid';
+    try{ localStorage.setItem('rl_view_mode', 'grid'); }catch(e){}
+    applyViewMode();
+    return false;
+  }
   if(h === 'fav'){ navTo('fav'); return true; }
   if(h === 'unread' || h === 'list'){ navTo('unread'); return true; }
   if(['review','timeline','stats'].includes(h)){ switchView(h); return true; }
@@ -1188,6 +1284,7 @@ function applyHash(){
   return false;
 }
 window.addEventListener('hashchange', ()=>{ if(!applyHash()) navTo('unread'); });
+applyViewMode();
 if(!applyHash()) loadItems();
 </script>
 </body>
