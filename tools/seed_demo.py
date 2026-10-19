@@ -82,10 +82,14 @@ def main():
         read = i % 3 != 0
         cover = ""
         content = f"<p>{title}——演示数据，用于截图预览。</p>"
+        # 每条都生成封面，卡片墙视图才有内容
+        fname = f"demo_cover_{i}.png"
+        hue = {"article": (0, 113, 227), "web": (142, 142, 147),
+               "video": (255, 55, 95), "image": (255, 149, 0)}[typ]
+        shade = max(0, 40 - i * 3)
+        make_png(IMG / fname, 800, 500, tuple(min(255, c + shade) for c in hue))
+        cover = f"/data/images/{fname}"
         if typ == "image":
-            fname = f"demo_{i}.png"
-            make_png(IMG / fname, 800, 500, (0, 113, 227) if i % 2 else (255, 149, 0))
-            cover = f"/data/images/{fname}"
             content = f'<img src="{cover}" style="max-width:100%">'
         elif typ == "video":
             content = (f'<p>视频链接收藏。暂不支持站内播放，'
