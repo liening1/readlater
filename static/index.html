@@ -31,7 +31,19 @@
   input,select,textarea{font-family:var(--font);font-size:14px;outline:none;color:var(--txt)}
   :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
 
-  .bg-aura{display:none}
+  .bg-aura{display:block;position:fixed;inset:0;z-index:-1;pointer-events:none;
+    background:
+      radial-gradient(58rem 40rem at 12% -12%, rgba(0,113,227,.20), transparent 62%),
+      radial-gradient(52rem 36rem at 88% -6%, rgba(94,92,230,.16), transparent 64%),
+      radial-gradient(48rem 34rem at 74% 104%, rgba(48,176,199,.15), transparent 62%),
+      radial-gradient(42rem 30rem at 2% 96%, rgba(255,149,0,.10), transparent 60%),
+      linear-gradient(180deg, #f8f9fc 0%, #eef1f6 100%)}
+  [data-theme="dark"] .bg-aura{
+    background:
+      radial-gradient(58rem 40rem at 12% -12%, rgba(10,132,255,.30), transparent 62%),
+      radial-gradient(52rem 36rem at 88% -6%, rgba(94,92,230,.24), transparent 64%),
+      radial-gradient(48rem 34rem at 74% 104%, rgba(48,176,199,.18), transparent 62%),
+      linear-gradient(180deg, #0b0c10 0%, #000 100%)}
 
   /* ── Apple 导航栏：半透明 + 发丝线，内容从下面滚过 ── */
   .topbar{position:sticky;top:0;z-index:20;background:rgba(251,251,253,.8);
@@ -329,6 +341,117 @@
     .tl-list{max-width:1680px}
   }
 
+  /* ── 划词高亮 ── */
+  mark.hl{background:rgba(255,214,10,.35);border-radius:3px;padding:0 1px;color:inherit}
+  .hl-float{position:fixed;z-index:90;background:rgba(29,29,31,.95);color:#fff;border-radius:980px;
+    padding:7px 14px;font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.25);opacity:0;transform:scale(.94);
+    transition:opacity 140ms ease-out,transform 140ms ease-out;cursor:pointer}
+  .hl-float.in{opacity:1;transform:scale(1)}
+  .hl-box{margin-top:28px;border-top:1px solid rgba(0,0,0,.08);padding-top:16px}
+  .hl-box h3{font-size:12px;color:var(--sub);font-weight:600;margin-bottom:8px}
+  .hl-item{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid rgba(0,0,0,.05);
+    font-size:13.5px;line-height:1.7}
+  .hl-item:last-child{border-bottom:none}
+  .hl-item p{flex:1;min-width:0}
+  .hl-item b{font-weight:400;color:var(--sub);cursor:pointer;flex-shrink:0}
+
+  /* ── 暗色主题 ── */
+  :root[data-theme="dark"]{
+    --bg:#000; --card:#1c1c1e; --line:rgba(255,255,255,.14); --line-soft:rgba(255,255,255,.09);
+    --txt:#f5f5f7; --sub:#a1a1a6; --faint:#6e6e73;
+    --accent:#0a84ff; --accent-deep:#409cff; --accent-soft:rgba(10,132,255,.2);
+    --danger:#ff453a;
+    --shadow-sm:0 1px 3px rgba(0,0,0,.55);
+    --shadow-md:0 8px 26px rgba(0,0,0,.65);
+    --glass:rgba(28,28,30,.8); --glass-border:rgba(255,255,255,.1);
+    color-scheme:dark;
+  }
+  [data-theme="dark"] .topbar,[data-theme="dark"] .reader-bar{
+    background:rgba(16,16,18,.82);border-bottom-color:rgba(255,255,255,.1)}
+  [data-theme="dark"] .card,[data-theme="dark"] .gcard,[data-theme="dark"] .num,
+  [data-theme="dark"] .hm-card,[data-theme="dark"] .review-card,[data-theme="dark"] .cal-card,
+  [data-theme="dark"] .tl-card,[data-theme="dark"] .pop{background:#1c1c1e}
+  [data-theme="dark"] .chip,[data-theme="dark"] .filters select,[data-theme="dark"] .filters .search,
+  [data-theme="dark"] .collect-row input,[data-theme="dark"] .note-box textarea,
+  [data-theme="dark"] .tag-edit input,[data-theme="dark"] .sb-rename,
+  [data-theme="dark"] .btn.ghost,[data-theme="dark"] .icon-btn{
+    background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.12);color:var(--txt)}
+  [data-theme="dark"] .btn.ghost:hover,[data-theme="dark"] .icon-btn:hover{background:rgba(255,255,255,.16)}
+  [data-theme="dark"] .badge,[data-theme="dark"] .tag,[data-theme="dark"] .tag-pill,
+  [data-theme="dark"] .card-note,[data-theme="dark"] .tl-note,[data-theme="dark"] .tl-kind,
+  [data-theme="dark"] .rc-type,[data-theme="dark"] .rc-note,[data-theme="dark"] .deck-progress,
+  [data-theme="dark"] .seg,[data-theme="dark"] .cal-cell.has,[data-theme="dark"] .gc-cover,
+  [data-theme="dark"] .thumb{background:rgba(255,255,255,.09)}
+  [data-theme="dark"] .tag{color:var(--txt)}
+  [data-theme="dark"] .seg button.on,[data-theme="dark"] .gc-type{background:rgba(60,60,64,.95);color:#f5f5f7}
+  [data-theme="dark"] .tabs button.on,[data-theme="dark"] .sb-item.on,
+  [data-theme="dark"] .sb-tag.on{background:rgba(255,255,255,.12)}
+  [data-theme="dark"] .cal-cell.today{background:#f5f5f7;color:#1d1d1f}
+  [data-theme="dark"] .cal-cell.today .cal-dot{background:#1d1d1f}
+  [data-theme="dark"] .hm-cell.lv0{background:rgba(255,255,255,.08)}
+  [data-theme="dark"] .hm-cell.lv1{background:#173a5e}
+  [data-theme="dark"] .hm-cell.lv2{background:#1f5f9e}
+  [data-theme="dark"] .hm-cell.lv3{background:#2b82d6}
+  [data-theme="dark"] .hm-cell.lv4{background:#4aa3ff}
+  [data-theme="dark"] .tl-rail::before{border-left-color:rgba(255,255,255,.18)}
+  [data-theme="dark"] .tl-dot{box-shadow:0 0 0 3px #000}
+  [data-theme="dark"] .sb-brand,[data-theme="dark"] .logo{color:var(--txt)}
+  [data-theme="dark"] .reader .content{color:#e8e8ed}
+  [data-theme="dark"] .overlay{background:#000}
+  [data-theme="dark"] .hl-box,[data-theme="dark"] .note-box{border-top-color:rgba(255,255,255,.12)}
+  [data-theme="dark"] .hl-item{border-bottom-color:rgba(255,255,255,.08)}
+  [data-theme="dark"] mark.hl{background:rgba(255,214,10,.26)}
+
+  /* ── Liquid Glass 全局玻璃材质（置于最后，覆盖平面样式） ── */
+  .topbar,.reader-bar{background:rgba(255,255,255,.45);
+    -webkit-backdrop-filter:blur(26px) saturate(180%);backdrop-filter:blur(26px) saturate(180%);
+    border-bottom:1px solid rgba(255,255,255,.55);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.75),0 8px 24px rgba(40,60,90,.06)}
+  .sidebar{background:rgba(255,255,255,.28);
+    -webkit-backdrop-filter:blur(24px) saturate(170%);backdrop-filter:blur(24px) saturate(170%);
+    border-right:1px solid rgba(255,255,255,.5)}
+  .card,.gcard,.num,.hm-card,.review-card,.cal-card,.tl-card{background:rgba(255,255,255,.5);
+    background-image:linear-gradient(180deg, rgba(255,255,255,.4), rgba(255,255,255,0) 45%);
+    -webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);
+    border:1px solid rgba(255,255,255,.55);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.85),0 10px 30px rgba(40,60,90,.08)}
+  .seg,.chip,.icon-btn,.btn.ghost,.filters select,.filters .search,.collect-row input,
+  .note-box textarea,.tag-edit input,.sb-rename{background:rgba(255,255,255,.42);
+    -webkit-backdrop-filter:blur(14px) saturate(160%);backdrop-filter:blur(14px) saturate(160%);
+    border:1px solid rgba(255,255,255,.55)}
+  .seg{background:rgba(255,255,255,.3)}
+  .chip.on{background:rgba(0,113,227,.92);border-color:transparent;color:#fff}
+  .badge,.tag,.tag-pill,.card-note,.tl-note,.tl-kind,.rc-type,.deck-progress,
+  .cal-cell.has,.gc-cover,.thumb{background:rgba(255,255,255,.42)}
+  .pop{background:rgba(255,255,255,.72);
+    -webkit-backdrop-filter:blur(30px) saturate(180%);backdrop-filter:blur(30px) saturate(180%);
+    border:1px solid rgba(255,255,255,.6)}
+  .overlay{background:rgba(248,249,252,.78);
+    -webkit-backdrop-filter:blur(30px) saturate(180%);backdrop-filter:blur(30px) saturate(180%)}
+  .reader .content{color:#1d1d1f}
+  .reader-tip{font-size:11.5px;color:var(--faint);margin-top:10px}
+  .card:hover,.gcard:hover,.tl-card:hover{
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.95),0 16px 40px rgba(40,60,90,.14)}
+
+  [data-theme="dark"] .topbar,[data-theme="dark"] .reader-bar{background:rgba(18,18,22,.5);
+    border-bottom-color:rgba(255,255,255,.1);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 8px 24px rgba(0,0,0,.5)}
+  [data-theme="dark"] .sidebar{background:rgba(18,18,22,.35);border-right-color:rgba(255,255,255,.09)}
+  [data-theme="dark"] .card,[data-theme="dark"] .gcard,[data-theme="dark"] .num,
+  [data-theme="dark"] .hm-card,[data-theme="dark"] .review-card,[data-theme="dark"] .cal-card,
+  [data-theme="dark"] .tl-card{background:rgba(30,30,34,.55);
+    background-image:linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,0) 45%);
+    border-color:rgba(255,255,255,.1);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 12px 30px rgba(0,0,0,.5)}
+  [data-theme="dark"] .seg,[data-theme="dark"] .chip,[data-theme="dark"] .icon-btn,
+  [data-theme="dark"] .btn.ghost,[data-theme="dark"] .filters select,[data-theme="dark"] .filters .search,
+  [data-theme="dark"] .collect-row input,[data-theme="dark"] .note-box textarea,
+  [data-theme="dark"] .tag-edit input,[data-theme="dark"] .sb-rename{
+    background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.12)}
+  [data-theme="dark"] .pop{background:rgba(38,38,44,.75);border-color:rgba(255,255,255,.12)}
+  [data-theme="dark"] .overlay{background:rgba(6,6,8,.8)}
+  [data-theme="dark"] .reader .content{color:#e8e8ed}
+
   @media (hover:hover) and (pointer:fine){
     .card:hover{transform:translateY(-1px);box-shadow:var(--shadow-md)}
     .gcard:hover{transform:translateY(-2px);box-shadow:var(--shadow-md)}
@@ -402,6 +525,13 @@
       <button class="sb-item" id="navTrash" onclick="navTo('trash')"><span class="sb-ico">⌫</span>回收站<span class="sb-count" id="cntTrash"></span></button>
     </div>
     <div class="sb-sec">
+      <div class="sb-sec-head"><span>数据</span></div>
+      <button class="sb-item" onclick="exportData()"><span class="sb-ico">↓</span>导出备份</button>
+      <button class="sb-item" onclick="document.getElementById('importFile').click()"><span class="sb-ico">↑</span>导入</button>
+      <input id="importFile" type="file" accept=".json,.html,.htm" style="display:none" onchange="importData(this)">
+      <button class="sb-item" id="themeToggle" onclick="cycleTheme()"><span class="sb-ico">◐</span>主题：自动</button>
+    </div>
+    <div class="sb-sec">
       <div class="sb-sec-head"><span>标签</span><button class="sb-add" onclick="newTag()" title="新建标签">+</button></div>
       <div id="sbTagList"></div>
     </div>
@@ -456,12 +586,18 @@
     <button class="btn ghost" id="readToggle" onclick="toggleRead()">标为未读</button>
     <button class="btn ghost" id="pinToggle" onclick="togglePinCurrent()">置顶</button>
     <button class="btn ghost" id="archiveToggle" onclick="toggleArchiveCurrent()">归档</button>
+    <div class="seg" style="margin-left:4px" title="阅读字号">
+      <button data-fs="s" onclick="setReaderSize('s')">小</button>
+      <button data-fs="m" class="on" onclick="setReaderSize('m')">中</button>
+      <button data-fs="l" onclick="setReaderSize('l')">大</button>
+    </div>
     <button class="btn ghost" onclick="deleteCurrent()" style="color:var(--danger)">删除</button>
   </div>
   <div class="reader">
     <h1 id="rTitle"></h1>
     <div class="byline" id="rByline"></div>
     <div class="content" id="rContent"></div>
+    <div class="reader-tip">选中正文文字可高亮，高亮会出现在「原文摘录」与每日回顾里</div>
     <div class="tag-edit">
       <h3>标签（回车添加）</h3>
       <div id="rTags" class="tags" style="margin-bottom:8px"></div>
@@ -471,6 +607,10 @@
       <h3>我的想法（可回流 flomo）</h3>
       <textarea id="rNote" oninput="noteDirty=true"></textarea>
       <button class="btn ghost" style="margin-top:8px" onclick="saveNote()">保存笔记</button>
+    </div>
+    <div class="hl-box" id="hlBox" style="display:none">
+      <h3>高亮 · <span id="hlCount">0</span> 条（选中正文后点「高亮这句」）</h3>
+      <div id="hlList"></div>
     </div>
   </div>
 </div>
@@ -604,6 +744,136 @@ function phFallback(el){
   d.className = 'thumb ph c-' + type;
   d.textContent = TYPE_ICON[type] || '链';
   el.replaceWith(d);
+}
+
+/* ── 主题（自动/浅色/深色） ── */
+let themeMode = 'auto';
+try{ themeMode = localStorage.getItem('rl_theme') || 'auto'; }catch(e){}
+function applyTheme(){
+  const dark = themeMode === 'dark' ||
+    (themeMode === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  const b = document.getElementById('themeToggle');
+  if(b) b.innerHTML = '<span class="sb-ico">◐</span>主题：' +
+    ({auto:'自动', light:'浅色', dark:'深色'}[themeMode] || '自动');
+}
+function cycleTheme(){
+  themeMode = themeMode === 'auto' ? 'light' : themeMode === 'light' ? 'dark' : 'auto';
+  try{ localStorage.setItem('rl_theme', themeMode); }catch(e){}
+  applyTheme();
+}
+try{
+  window.matchMedia('(prefers-color-scheme: dark)')
+    .addEventListener('change', ()=>{ if(themeMode === 'auto') applyTheme(); });
+}catch(e){}
+
+/* ── 阅读字号 ── */
+let readerSize = 'm';
+try{ readerSize = localStorage.getItem('rl_reader_size') || 'm'; }catch(e){}
+function applyReaderSize(){
+  const map = {s:'15px', m:'16.5px', l:'19px'};
+  const c = document.getElementById('rContent');
+  if(c) c.style.fontSize = map[readerSize] || map.m;
+  document.querySelectorAll('.reader-bar .seg button[data-fs]')
+    .forEach(b=>b.classList.toggle('on', b.dataset.fs === readerSize));
+}
+function setReaderSize(s){
+  readerSize = s;
+  try{ localStorage.setItem('rl_reader_size', s); }catch(e){}
+  applyReaderSize();
+}
+
+/* ── 导出 / 导入（数据主权） ── */
+function exportData(){ toast('正在导出备份…'); location.href = '/api/export'; }
+async function importData(el){
+  const f = el.files[0];
+  if(!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  toast('导入中…');
+  try{
+    const r = await api('/api/import', {method:'POST', body: fd});
+    toast(`导入完成：新增 ${r.imported} 条，跳过重复 ${r.skipped} 条`);
+    loadItems(); loadTags();
+  }catch(e){ toast('导入失败：'+e.message); }
+  el.value = '';
+}
+
+/* ── 划词高亮 ── */
+let hlBtn = null;
+function hideHlBtn(){ if(hlBtn){ hlBtn.remove(); hlBtn = null; } }
+function onContentMouseUp(){
+  const sel = window.getSelection();
+  const text = (sel && sel.toString() || '').trim();
+  if(!text || text.length < 2){ hideHlBtn(); return; }
+  const node = sel.anchorNode;
+  const content = document.getElementById('rContent');
+  if(!node || !content || !content.contains(node)) return;
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  hideHlBtn();
+  const btn = document.createElement('button');
+  btn.className = 'hl-float';
+  btn.textContent = '高亮这句';
+  btn.style.left = Math.min(window.innerWidth - 110, Math.max(12, rect.left + rect.width/2 - 48)) + 'px';
+  btn.style.top = (rect.top > 60 ? rect.top - 44 : rect.bottom + 10) + 'px';
+  btn.onclick = async ()=>{
+    try{
+      await api('/api/highlights', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({item_id: currentId, text})});
+      toast('已高亮');
+      hideHlBtn(); window.getSelection().removeAllRanges();
+      markHighlights([text]);
+      loadHighlights(currentId);
+    }catch(e){ toast('高亮失败：'+e.message); }
+  };
+  document.body.appendChild(btn);
+  requestAnimationFrame(()=>btn.classList.add('in'));
+  hlBtn = btn;
+}
+async function loadHighlights(itemId){
+  try{
+    const d = await api('/api/items/'+itemId+'/highlights');
+    const box = document.getElementById('hlBox');
+    const list = document.getElementById('hlList');
+    const n = d.highlights.length;
+    document.getElementById('hlCount').textContent = n;
+    box.style.display = n ? '' : 'none';
+    list.innerHTML = d.highlights.map(h=>`<div class="hl-item">
+      <p>“${esc(h.text)}”</p>
+      <b onclick="deleteHighlight(${h.id})">删除</b></div>`).join('');
+    markHighlights(d.highlights.map(h=>h.text));
+  }catch(e){}
+}
+/* 在正文里把已保存的高亮标出来（按文本匹配，跨节点选区只记入列表） */
+function markHighlights(texts){
+  const content = document.getElementById('rContent');
+  if(!content || !texts || !texts.length) return;
+  texts.forEach(text=>{
+    if(!text || text.length < 2) return;
+    const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, {
+      acceptNode(n){
+        if(!n.nodeValue || n.nodeValue.indexOf(text) < 0) return NodeFilter.FILTER_REJECT;
+        const p = n.parentElement;
+        if(p && (p.tagName === 'MARK' || p.tagName === 'SCRIPT' || p.tagName === 'STYLE'))
+          return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const node = walker.nextNode();
+    if(!node) return;
+    const idx = node.nodeValue.indexOf(text);
+    const range = document.createRange();
+    range.setStart(node, idx);
+    range.setEnd(node, idx + text.length);
+    const mark = document.createElement('mark');
+    mark.className = 'hl';
+    try{ range.surroundContents(mark); }catch(e){}
+  });
+}
+async function deleteHighlight(id){
+  if(!confirm('删除这条高亮？')) return;
+  try{ await api('/api/highlights/'+id, {method:'DELETE'}); loadHighlights(currentId); }
+  catch(e){ toast('删除失败：'+e.message); }
 }
 
 async function loadItems(){
@@ -903,6 +1173,8 @@ async function openReader(id){
   updateReadBtn(it.status);
   updatePinBtn(it);
   updateArchiveBtn(it);
+  loadHighlights(id);
+  applyReaderSize();
   document.getElementById('overlay').classList.add('show');
   document.body.style.overflow = 'hidden';
   // 不自动标已读：显式 ✓ / 按钮 / 点「查看原文」才标记，避免返回列表时卡片被「未读」筛选掉
@@ -1084,6 +1356,7 @@ function renderDeck(){
       <h2>${esc(it.title)}</h2>
       <div class="rc-meta">${it.author?esc(it.author)+' · ':''}${fmtDate(it.created_at)} 收藏${it.seen_count?` · 已回顾 ${it.seen_count} 次`:''}</div>
       ${it.note?`<div class="rc-note"><span class="rc-note-label">我的想法</span>${esc(it.note)}</div>`:''}
+      ${it.hl?`<div class="rc-hl"><span class="rc-note-label">原文摘录</span>“${esc(it.hl)}”</div>`:''}
       ${it.excerpt?`<div class="rc-excerpt">${esc(it.excerpt)}</div>`:''}
       ${it.tags.length?`<div class="tags" style="margin-top:10px">${it.tags.map(t=>`<span class="tag">#${esc(t)}</span>`).join('')}</div>`:''}
       <div class="review-actions">
@@ -1266,11 +1539,21 @@ function renderHeatmap(){
 function applyHash(){
   const h = (location.hash || '').replace(/^#\/?/, '');
   if(!h) return false;
+  if(h === 'dark' || h === 'light'){    // #dark / #light 强制主题（也便于截图）
+    themeMode = h;
+    try{ localStorage.setItem('rl_theme', h); }catch(e){}
+    applyTheme();
+    return false;
+  }
   if(h === 'grid'){                      // #grid 直达卡片墙视图
     viewMode = 'grid';
     try{ localStorage.setItem('rl_view_mode', 'grid'); }catch(e){}
     applyViewMode();
     return false;
+  }
+  if(h.startsWith('item=')){             // #item=12 直接打开阅读器
+    const id = parseInt(h.slice(5), 10);
+    if(id){ openReader(id); return true; }
   }
   if(h === 'fav'){ navTo('fav'); return true; }
   if(h === 'unread' || h === 'list'){ navTo('unread'); return true; }
@@ -1284,6 +1567,11 @@ function applyHash(){
   return false;
 }
 window.addEventListener('hashchange', ()=>{ if(!applyHash()) navTo('unread'); });
+document.getElementById('rContent').addEventListener('mouseup', onContentMouseUp);
+document.addEventListener('mousedown', e=>{ if(hlBtn && e.target !== hlBtn) hideHlBtn(); });
+document.getElementById('overlay').addEventListener('scroll', hideHlBtn, {passive:true});
+applyTheme();
+applyReaderSize();
 applyViewMode();
 if(!applyHash()) loadItems();
 </script>

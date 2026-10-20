@@ -2,6 +2,7 @@
 
 启动：见 run.sh / README.md
 """
+import json
 import os
 import re
 import sqlite3
@@ -13,8 +14,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from bs4 import BeautifulSoup
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -79,6 +81,13 @@ def db() -> sqlite3.Connection:
             color TEXT DEFAULT '',
             pinned INTEGER DEFAULT 0,
             created_at TEXT)""")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS highlights(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+            text TEXT NOT NULL,
+            note TEXT DEFAULT '',
+            created_at TEXT NOT NULL)""")
     conn.commit()
     return conn
 
@@ -215,6 +224,12 @@ class TagPatch(BaseModel):
     pinned: Optional[int] = None
 
 
+class HighlightBody(BaseModel):
+    item_id: int
+    text: str
+    note: str = ""
+
+
 @app.get("/collect")
 async def collect_get(url: str, note: str = ""):
     """Bookmarklet / 快捷指令通道：GET 即收集，完成后回首页。"""
@@ -283,8 +298,8 @@ def list_items(status: str = "", type: str = "", tag: str = "", q: str = "",
         sql += " AND (',' || tags || ',') LIKE ?"
         args.append(f"%,{tag},%")
     if q:
-        sql += " AND (title LIKE ? OR excerpt LIKE ? OR note LIKE ?)"
-        args += [f"%{q}%"] * 3
+        sql += " AND (title LIKE ? OR excerpt LIKE ? OR note LIKE ? OR url LIKE ?)"
+        args += [f"%{q}%"] * 4
     sql += " ORDER BY pinned DESC, id DESC LIMIT ? OFFSET ?"
     args += [min(limit, 200), offset]
     conn = db()
@@ -565,7 +580,9 @@ def review_due(n: int = 5):
     try:
         pool = conn.execute(
             """SELECT i.*, IFNULL(rs.seen_count,0) AS seen_count,
-                      IFNULL(rs.favorite,0) AS favorite, rs.last_seen
+                      IFNULL(rs.favorite,0) AS favorite, rs.last_seen,
+                      (SELECT text FROM highlights h WHERE h.item_id=i.id
+                       ORDER BY RANDOM() LIMIT 1) AS hl
                FROM items i LEFT JOIN review_state rs ON rs.item_id = i.id
                WHERE i.deleted_at IS NULL AND i.archived_at IS NULL
                  AND (rs.item_id IS NULL
@@ -660,6 +677,170 @@ def review_stats():
         d -= timedelta(days=1)
     return {"today_done": today_done, "due_left": due_left,
             "active": active, "streak": streak}
+
+
+@app.get("/api/items/{item_id}/highlights")
+def list_highlights(item_id: int):
+    conn = db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM highlights WHERE item_id=? ORDER BY id DESC", (item_id,)).fetchall()
+    finally:
+        conn.close()
+    return {"highlights": [dict(r) for r in rows]}
+
+
+@app.post("/api/highlights")
+def add_highlight(body: HighlightBody):
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "高亮内容为空")
+    with _DB_LOCK:
+        conn = db()
+        try:
+            if conn.execute("SELECT 1 FROM items WHERE id=?", (body.item_id,)).fetchone() is None:
+                raise HTTPException(404, "条目不存在")
+            cur = conn.execute(
+                "INSERT INTO highlights(item_id,text,note,created_at) VALUES(?,?,?,?)",
+                (body.item_id, text[:2000], body.note.strip(),
+                 datetime.now(TZ).isoformat(timespec="seconds")))
+            conn.commit()
+            row = conn.execute("SELECT * FROM highlights WHERE id=?", (cur.lastrowid,)).fetchone()
+        finally:
+            conn.close()
+    return dict(row)
+
+
+@app.delete("/api/highlights/{hid}")
+def delete_highlight(hid: int):
+    with _DB_LOCK:
+        conn = db()
+        try:
+            cur = conn.execute("DELETE FROM highlights WHERE id=?", (hid,))
+            conn.commit()
+        finally:
+            conn.close()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "高亮不存在")
+    return {"deleted": hid}
+
+
+# ---------- 导出 / 导入（数据主权） ----------
+@app.get("/api/export")
+def export_data():
+    """导出全部数据为 JSON（含正文、标签、回顾状态、高亮）。"""
+    conn = db()
+    try:
+        items = [dict(r) for r in conn.execute("SELECT * FROM items ORDER BY id").fetchall()]
+        tags = [dict(r) for r in conn.execute("SELECT * FROM tags").fetchall()]
+        review = [dict(r) for r in conn.execute("SELECT * FROM review_state").fetchall()]
+        highlights = [dict(r) for r in conn.execute("SELECT * FROM highlights").fetchall()]
+    finally:
+        conn.close()
+    payload = {
+        "app": "readlater",
+        "version": 1,
+        "exported_at": datetime.now(TZ).isoformat(timespec="seconds"),
+        "items": items, "tags": tags, "review_state": review, "highlights": highlights,
+    }
+    fname = f"readlater-export-{datetime.now(TZ).strftime('%Y%m%d-%H%M')}.json"
+    return Response(
+        json.dumps(payload, ensure_ascii=False, indent=1),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@app.post("/api/import")
+async def import_data(file: UploadFile = File(...), mode: str = Form("auto")):
+    """导入：ReadLater JSON 备份 / 浏览器或 Pocket 的书签 HTML。"""
+    raw = await file.read()
+    text = raw.decode("utf-8", errors="ignore")
+    imported, skipped = 0, 0
+    is_json = text.lstrip().startswith("{")
+    with _DB_LOCK:
+        conn = db()
+        try:
+            if is_json:
+                try:
+                    data = json.loads(text)
+                except Exception:
+                    raise HTTPException(400, "JSON 解析失败")
+                rows = data.get("items") or []
+                url_map = {}
+                for it in rows:
+                    url = (it.get("url") or "").strip()
+                    if not url:
+                        skipped += 1
+                        continue
+                    exists = conn.execute(
+                        "SELECT id FROM items WHERE url=?", (url,)).fetchone()
+                    if exists:
+                        url_map[url] = exists["id"]
+                        skipped += 1
+                        continue
+                    cur = conn.execute(
+                        "INSERT INTO items(type,url,title,author,cover,content_html,excerpt,"
+                        "tags,note,status,created_at,read_at,archived_at,pinned) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (it.get("type") or "web", url, it.get("title") or url,
+                         it.get("author") or "", it.get("cover") or "",
+                         it.get("content_html") or "", it.get("excerpt") or "",
+                         it.get("tags") or "", it.get("note") or "",
+                         it.get("status") or "unread",
+                         it.get("created_at") or datetime.now(TZ).isoformat(timespec="seconds"),
+                         it.get("read_at"), it.get("archived_at"), it.get("pinned") or 0))
+                    url_map[url] = cur.lastrowid
+                    imported += 1
+                # 标签元数据
+                for t in data.get("tags") or []:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO tags(name,color,pinned,created_at) VALUES(?,?,?,?)",
+                        (t.get("name"), t.get("color") or "", t.get("pinned") or 0,
+                         t.get("created_at") or datetime.now(TZ).isoformat(timespec="seconds")))
+                # 回顾状态（按原 item_id → URL 映射）
+                id_to_url = {(it.get("id")): (it.get("url") or "") for it in rows}
+                for rs in data.get("review_state") or []:
+                    url = id_to_url.get(rs.get("item_id"))
+                    new_id = url_map.get(url) if url else None
+                    if not new_id:
+                        continue
+                    conn.execute(
+                        "INSERT OR IGNORE INTO review_state(item_id,seen_count,last_seen,"
+                        "next_due,bucket,favorite,archived) VALUES(?,?,?,?,?,?,?)",
+                        (new_id, rs.get("seen_count") or 0, rs.get("last_seen"),
+                         rs.get("next_due"), rs.get("bucket") or "",
+                         rs.get("favorite") or 0, rs.get("archived") or 0))
+                # 高亮
+                for hl in data.get("highlights") or []:
+                    url = id_to_url.get(hl.get("item_id"))
+                    new_id = url_map.get(url) if url else None
+                    if not new_id:
+                        continue
+                    conn.execute(
+                        "INSERT INTO highlights(item_id,text,note,created_at) VALUES(?,?,?,?)",
+                        (new_id, hl.get("text") or "", hl.get("note") or "",
+                         hl.get("created_at") or datetime.now(TZ).isoformat(timespec="seconds")))
+            else:
+                soup = BeautifulSoup(text, "html.parser")
+                for a in soup.find_all("a", href=True):
+                    url = a["href"].strip()
+                    if not re.match(r"^https?://", url):
+                        continue
+                    if conn.execute("SELECT 1 FROM items WHERE url=?", (url,)).fetchone():
+                        skipped += 1
+                        continue
+                    title = (a.get_text(strip=True) or url)[:300]
+                    conn.execute(
+                        "INSERT INTO items(type,url,title,excerpt,status,created_at) "
+                        "VALUES(?,?,?,?,'unread',?)",
+                        (detect_type(url), url, title, "从浏览器书签导入",
+                         datetime.now(TZ).isoformat(timespec="seconds")))
+                    imported += 1
+            conn.commit()
+        finally:
+            conn.close()
+    return {"imported": imported, "skipped": skipped,
+            "kind": "json" if is_json else "bookmarks"}
 
 
 @app.get("/api/stats/overview")
