@@ -20,7 +20,8 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from parser import detect_type, fetch, parse_generic, parse_video, parse_wechat
+from parser import (detect_type, enrich_with_pdf, fetch, is_challenge, parse_generic,
+                    parse_video, parse_wechat, render_html_async)
 
 BASE = Path(__file__).parent
 # 数据目录可用环境变量覆盖（Docker 下指向挂载卷 /data）
@@ -59,10 +60,13 @@ def db() -> sqlite3.Connection:
             read_at TEXT,
             deleted_at TEXT,
             archived_at TEXT,
+            published_at TEXT,
+            quality TEXT DEFAULT 'full',
             pinned INTEGER DEFAULT 0)""")
     # 老库自动迁移：补齐后加的列
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(items)").fetchall()}
     for name, ddl in (("deleted_at", "TEXT"), ("archived_at", "TEXT"),
+                      ("published_at", "TEXT"), ("quality", "TEXT DEFAULT 'full'"),
                       ("pinned", "INTEGER DEFAULT 0")):
         if name not in cols:
             conn.execute(f"ALTER TABLE items ADD COLUMN {name} {ddl}")
@@ -134,6 +138,7 @@ async def collect_url(url: str, note: str = "") -> dict:
     url_type = detect_type(url)
     title, author, cover = url[:80], "", ""
     content_html, excerpt, published = "", "", ""
+    quality = "link_only"
     try:
         if url_type == "image":
             local = await _save_remote_image(url, item_key)
@@ -141,12 +146,14 @@ async def collect_url(url: str, note: str = "") -> dict:
                 title = Path(local).name
                 content_html = f'<img src="{local}" style="max-width:100%">'
                 cover = local
+                quality = "full"
             else:
                 excerpt = "图片下载失败，仅存链接"
         elif url_type == "video":
             meta = await parse_video(url)
             title, author, cover = meta["title"], meta["author"], meta["cover"]
             excerpt = meta["excerpt"] or "视频链接"
+            quality = meta.get("quality", "link_only")
             content_html = (f'<p>视频链接收藏。暂不支持站内播放，'
                             f'<a href="{url}" target="_blank">打开原视频</a></p>')
         else:
@@ -158,16 +165,42 @@ async def collect_url(url: str, note: str = "") -> dict:
                 if local:
                     title, cover = Path(local).name, local
                     content_html = f'<img src="{local}" style="max-width:100%">'
+                    quality = "full"
             elif "mp.weixin.qq.com" in url:
                 url_type = "article"
                 meta = await parse_wechat(resp.text, url, item_key)
                 title, author, cover = meta["title"], meta["author"], meta["cover"]
                 content_html, excerpt, published = (meta["content_html"],
                                                     meta["excerpt"], meta["published"])
+                quality = meta.get("quality", "full")
             else:
                 meta = await parse_generic(resp.text, url)
                 title, author, cover = meta["title"], meta["author"], meta["cover"]
                 content_html, excerpt = meta["content_html"], meta["excerpt"]
+                published = meta.get("published", "")
+                quality = meta.get("quality", "link_only")
+                # JS 挑战页 / SPA 空壳 → 无头浏览器执行 JS 后重解析
+                if quality == "link_only" or is_challenge(resp.text):
+                    rendered = await render_html_async(url)
+                    if rendered:
+                        meta2 = await parse_generic(rendered, url)
+                        if len(meta2.get("content_html") or "") > len(content_html):
+                            title = meta2["title"] or title
+                            author = meta2["author"] or author
+                            cover = meta2["cover"] or cover
+                            content_html = meta2["content_html"]
+                            excerpt = meta2["excerpt"] or excerpt
+                            published = meta2.get("published") or published
+                            quality = meta2.get("quality", quality)
+                            html_for_pdf = rendered
+                        else:
+                            html_for_pdf = resp.text
+                    else:
+                        html_for_pdf = resp.text
+                else:
+                    html_for_pdf = resp.text
+                content_html, quality = await enrich_with_pdf(
+                    html_for_pdf, url, content_html, quality)
     except Exception as e:  # 网络失败也先入账，保住链接
         excerpt = f"抓取失败（{type(e).__name__}），仅存链接"
 
@@ -178,8 +211,10 @@ async def collect_url(url: str, note: str = "") -> dict:
             try:
                 cur = conn.execute(
                     "INSERT INTO items(type,url,title,author,cover,content_html,excerpt,tags,"
-                    "note,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'unread',?)",
-                    (url_type, url, title, author, cover, content_html, excerpt, "", note, now))
+                    "note,status,created_at,published_at,quality) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,'unread',?,?,?)",
+                    (url_type, url, title, author, cover, content_html, excerpt, "", note, now,
+                     published, quality))
                 conn.commit()
                 item_id = cur.lastrowid
             except sqlite3.IntegrityError:  # 并发收集同一链接
@@ -187,12 +222,74 @@ async def collect_url(url: str, note: str = "") -> dict:
                 return {"id": row["id"], "duplicate": True, "title": row["title"]}
         finally:
             conn.close()
-    return {"id": item_id, "duplicate": False, "title": title, "type": url_type}
+    return {"id": item_id, "duplicate": False, "title": title, "type": url_type,
+            "quality": quality}
 
 
 async def _save_remote_image(img_url: str, item_key: str) -> str | None:
     from parser import _save_image
     return await _save_image(img_url, item_key, 0)
+
+
+@app.post("/api/items/{item_id}/refetch")
+async def refetch_item(item_id: int):
+    """重新抓取并解析：用于早先只抓到挑战壳 / 空壳的条目。"""
+    conn = db()
+    try:
+        row = conn.execute("SELECT url, type FROM items WHERE id=?", (item_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(404, "条目不存在")
+    url = row["url"]
+    if not re.match(r"^https?://", url or ""):
+        raise HTTPException(400, "该条目没有可重新抓取的远程链接")
+
+    item_key = uuid.uuid4().hex[:12]
+    url_type = row["type"] or detect_type(url)
+    title = author = cover = content_html = excerpt = published = ""
+    quality = "link_only"
+    try:
+        resp = await fetch(url)
+        if "mp.weixin.qq.com" in url:
+            meta = await parse_wechat(resp.text, url, item_key)
+        else:
+            meta = await parse_generic(resp.text, url)
+        title, author, cover = meta["title"], meta["author"], meta["cover"]
+        content_html, excerpt, published = (meta["content_html"], meta["excerpt"],
+                                            meta.get("published", ""))
+        quality = meta.get("quality", "link_only")
+        html_for_pdf = resp.text
+        if quality == "link_only" or is_challenge(resp.text):
+            rendered = await render_html_async(url)
+            if rendered:
+                meta2 = await parse_generic(rendered, url)
+                if len(meta2.get("content_html") or "") > len(content_html):
+                    title = meta2["title"] or title
+                    author = meta2["author"] or author
+                    cover = meta2["cover"] or cover
+                    content_html = meta2["content_html"]
+                    excerpt = meta2["excerpt"] or excerpt
+                    published = meta2.get("published") or published
+                    quality = meta2.get("quality", quality)
+                    html_for_pdf = rendered
+        content_html, quality = await enrich_with_pdf(
+            html_for_pdf, url, content_html, quality)
+    except Exception as e:
+        raise HTTPException(502, f"重新抓取失败：{type(e).__name__}")
+
+    with _DB_LOCK:
+        conn = db()
+        try:
+            conn.execute(
+                "UPDATE items SET title=?, author=?, cover=?, content_html=?, excerpt=?,"
+                " published_at=?, quality=? WHERE id=?",
+                (title, author, cover, content_html, excerpt, published, quality, item_id))
+            conn.commit()
+            updated = row_dict(conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone())
+        finally:
+            conn.close()
+    return {"item": updated, "quality": quality}
 
 
 # ---------- API ----------

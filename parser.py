@@ -5,8 +5,13 @@
 - 其他外网域先尝试直连，失败后自动走代理兜底
 - 代理优先级：READLATER_PROXY 环境变量 > 系统代理环境变量 > http://127.0.0.1:7897（Clash 默认混合端口）
 """
+import asyncio
+import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -85,6 +90,218 @@ def _clean_title(raw: str) -> str:
     return re.sub(r"\s+", " ", raw or "").strip()[:300]
 
 
+# ---------- 无头浏览器兜底（JS 挑战页 / SPA） ----------
+CHROME_CANDIDATES = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+)
+CHALLENGE_MARKERS = ("Client Challenge", "_fs-ch", "cf-challenge", "Just a moment...",
+                     "Attention Required", "Enable JavaScript and cookies to continue")
+
+
+def chrome_path() -> str | None:
+    p = os.environ.get("READLATER_CHROME")
+    if p and Path(p).exists():
+        return p
+    for c in CHROME_CANDIDATES:
+        if Path(c).exists():
+            return c
+    return shutil.which("google-chrome") or shutil.which("chromium")
+
+
+def is_challenge(html: str) -> bool:
+    """识别 JS 机器人挑战/空壳页：内容极少且出现挑战标记。"""
+    if not html:
+        return True
+    return len(html) < 40000 and any(m in html for m in CHALLENGE_MARKERS)
+
+
+def render_html(url: str, budget_ms: int = 15000, timeout: int = 40) -> str | None:
+    """用无头 Chrome 执行 JS 后取 DOM。
+
+    关键点：必须伪装成真实浏览器 UA——headless 默认 UA 含 "HeadlessChrome"，
+    Fastly/Cloudflare 一类挑战会直接拒绝，页面永远停在挑战壳上。
+    """
+    exe = chrome_path()
+    if not exe:
+        return None
+    profile = tempfile.mkdtemp(prefix="rl-chrome-")
+    try:
+        cmd = [exe, "--headless=new", "--disable-gpu", "--no-first-run", "--no-sandbox",
+               f"--user-data-dir={profile}", f"--user-agent={HEADERS['User-Agent']}",
+               f"--virtual-time-budget={budget_ms}", f"--timeout={budget_ms + 5000}",
+               "--dump-dom", url]
+        out = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        html = out.stdout.decode("utf-8", "ignore")
+        return html if len(html) > 2000 else None
+    except Exception:
+        return None
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+async def render_html_async(url: str) -> str | None:
+    return await asyncio.to_thread(render_html, url)
+
+
+# ---------- PDF 正文抽取（工作论文 / 报告类页面） ----------
+def find_pdf_link(html: str, base: str) -> str:
+    m = re.search(r'href="([^"]+\.pdf[^"]*)"', html or "", re.I)
+    if not m:
+        return ""
+    href = m.group(1)
+    if href.startswith("//"):
+        return "https:" + href
+    if not href.startswith("http"):
+        from urllib.parse import urljoin
+        return urljoin(base, href)
+    return href
+
+
+async def pdf_text(url: str, max_pages: int = 12, max_bytes: int = 25_000_000) -> str:
+    try:
+        from io import BytesIO
+
+        from pypdf import PdfReader
+    except Exception:
+        return ""
+    try:
+        resp = await fetch(url)
+        if len(resp.content) > max_bytes:
+            return ""
+        reader = PdfReader(BytesIO(resp.content))
+        chunks: list[str] = []
+        for page in reader.pages[:max_pages]:
+            chunks.append(page.extract_text() or "")
+        text = re.sub(r"[ \t]+", " ", "\n".join(chunks))
+        return re.sub(r"\n{2,}", "\n", text).strip()
+    except Exception:
+        return ""
+
+
+async def enrich_with_pdf(html: str, url: str, content_html: str, quality: str) -> tuple[str, str]:
+    """落地页正文太短时，找页面上的 PDF 并抽取正文追加到内容里。"""
+    if len(content_html) >= 4000:
+        return content_html, quality
+    pdf_url = find_pdf_link(html, url)
+    if not pdf_url:
+        return content_html, quality
+    text = await pdf_text(pdf_url)
+    if not text or len(text) < 1200:
+        return content_html, quality
+    paras = [p.strip() for p in re.split(r"\n+", text) if len(p.strip()) > 40][:160]
+    body = "".join(f"<p>{p}</p>" for p in paras)
+    out = (content_html or "") + \
+        '<h2>PDF 正文（自动抽取）</h2>' + body + \
+        f'<p><a href="{pdf_url}" target="_blank" rel="noopener">查看原始 PDF ↗</a></p>'
+    return out, "full"
+
+
+# ---------- 元数据抽取（JSON-LD / meta 多路兜底） ----------
+def _jsonld_nodes(soup: BeautifulSoup) -> list:
+    nodes: list = []
+    for s in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            data = json.loads(s.string or s.get_text() or "")
+        except Exception:
+            continue
+        stack = [data]
+        while stack:
+            d = stack.pop()
+            if isinstance(d, dict):
+                nodes.append(d)
+                for k in ("@graph", "mainEntity", "itemListElement"):
+                    if isinstance(d.get(k), list):
+                        stack.extend(d[k])
+                    elif isinstance(d.get(k), dict):
+                        stack.append(d[k])
+            elif isinstance(d, list):
+                stack.extend(d)
+    return nodes
+
+
+def _ld_first(nodes: list, keys: tuple) -> str:
+    for n in nodes:
+        for k in keys:
+            v = n.get(k) if isinstance(n, dict) else None
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            if isinstance(v, dict) and isinstance(v.get("name"), str):
+                return v["name"].strip()
+            if isinstance(v, list) and v:
+                first = v[0]
+                if isinstance(first, str):
+                    return first.strip()
+                if isinstance(first, dict) and isinstance(first.get("name"), str):
+                    return first["name"].strip()
+    return ""
+
+
+def _ld_image(nodes: list) -> str:
+    for n in nodes:
+        img = n.get("image") if isinstance(n, dict) else None
+        if isinstance(img, str):
+            return img
+        if isinstance(img, dict) and isinstance(img.get("url"), str):
+            return img["url"]
+        if isinstance(img, list) and img:
+            first = img[0]
+            if isinstance(first, str):
+                return first
+            if isinstance(first, dict) and isinstance(first.get("url"), str):
+                return first["url"]
+    return ""
+
+
+def _tidy_title(raw: str) -> str:
+    """去掉站点后缀：取最长片段（"标题 | 栏目 | 站点" → "标题"）。"""
+    raw = _clean_title(raw)
+    if not raw:
+        return ""
+    parts = [p.strip() for p in re.split(r"\s+[|｜·–—]\s+|\s+-\s+", raw) if p.strip()]
+    if len(parts) <= 1:
+        return raw
+    longest = max(parts, key=len)
+    return longest if len(longest) >= 12 else parts[0]
+
+
+def _pick_main(soup: BeautifulSoup) -> Tag:
+    for sel in ("article", "main", "[role=main]",
+                ".article-body", ".article-content", ".post-content", ".entry-content",
+                ".content-body", "#content", ".content"):
+        node = soup.select_one(sel)
+        if node is not None and len(node.get_text(" ", strip=True)) > 200:
+            return node
+    return soup.body or soup
+
+
+def _blockify(main: Tag, soup: BeautifulSoup) -> tuple[str, str]:
+    """把主体转成干净的段落 HTML，并返回纯文本。"""
+    for t in main.find_all(["script", "style", "link", "iframe", "form", "button", "nav",
+                            "aside", "footer", "noscript", "svg"]):
+        t.decompose()
+    blocks: list[str] = []
+    for el in main.find_all(["h1", "h2", "h3", "p", "li", "blockquote", "figcaption"]):
+        txt = el.get_text(" ", strip=True)
+        if len(txt) < 20:
+            continue
+        tag = el.name if el.name in ("h2", "h3", "blockquote") else "p"
+        blocks.append(f"<{tag}>{txt}</{tag}>")
+        if len(blocks) >= 120:
+            break
+    html = "".join(blocks)
+    text = "\n".join(BeautifulSoup(b, "html.parser").get_text(" ", strip=True) for b in blocks)
+    return html, text
+
+
+def _quality(text: str) -> str:
+    n = len(text.strip())
+    return "full" if n >= 800 else ("partial" if n >= 200 else "link_only")
+
+
 async def _save_image(img_url: str, item_key: str, idx: int) -> str | None:
     """下载图片到本地（微信域直连，其余先直连后代理兜底），失败返回 None。"""
     headers = {"User-Agent": HEADERS["User-Agent"]}
@@ -157,23 +374,53 @@ async def parse_wechat(html: str, url: str, item_key: str) -> dict:
         text = soup.get_text(" ", strip=True)
         excerpt = text[:160]
     return {"title": title or url[:80], "author": author, "cover": cover,
-            "published": published, "content_html": content_html, "excerpt": excerpt}
+            "published": published, "content_html": content_html, "excerpt": excerpt,
+            "quality": _quality(text)}
 
 
 async def parse_generic(html: str, url: str) -> dict:
+    """通用网页解析：JSON-LD / og / twitter / 正文启发式多路兜底，并给出质量等级。"""
     soup = BeautifulSoup(html, "html.parser")
-    title = _clean_title(_meta(soup, "og:title") or (soup.title.get_text() if soup.title else ""))
-    cover = _meta(soup, "og:image")
-    desc = _clean_title(_meta(soup, "og:description") or _meta(soup, "description"))
-    _sanitize(soup)
-    main = soup.find("article") or soup.find("main") or soup.body or soup
-    paras = [p.get_text(" ", strip=True) for p in main.find_all(["p", "li", "h2", "h3"])]
-    paras = [p for p in paras if len(p) > 20][:120]
-    text = "\n".join(paras)[:12000]
-    content_html = "".join(f"<p>{p}</p>" for p in paras[:80])
-    excerpt = desc or text[:160]
-    return {"title": title or url[:80], "author": _clean_title(_meta(soup, "og:site_name")),
-            "cover": cover, "published": "", "content_html": content_html, "excerpt": excerpt}
+    ld = _jsonld_nodes(soup)
+
+    title_raw = (_meta(soup, "og:title") or _meta(soup, "twitter:title")
+                 or _ld_first(ld, ("headline", "name"))
+                 or (soup.title.get_text() if soup.title else ""))
+    title = _tidy_title(title_raw) or url[:80]
+    if title.strip().lower() in ("client challenge", "just a moment...", ""):
+        title = url[:80]
+
+    cover = (_meta(soup, "og:image") or _meta(soup, "twitter:image") or _ld_image(ld))
+    desc = _clean_title(_meta(soup, "og:description") or _meta(soup, "description")
+                        or _meta(soup, "twitter:description")
+                        or _ld_first(ld, ("description", "abstract")))
+    author = (_clean_title(_meta(soup, "author") or _meta(soup, "article:author"))
+              or _ld_first(ld, ("author", "creator"))
+              or _clean_title(_meta(soup, "og:site_name")))
+    published = (_meta(soup, "article:published_time") or _meta(soup, "datePublished")
+                 or _ld_first(ld, ("datePublished", "dateCreated")))
+    if not published:
+        t = soup.find("time")
+        if t is not None and t.get("datetime"):
+            published = t["datetime"]
+    published = (published or "")[:19].replace("T", " ")
+
+    if not cover:  # 最后兜底：正文里第一张够大的图
+        for img in soup.find_all("img"):
+            src = img.get("src") or ""
+            w = str(img.get("width") or "")
+            if src.startswith("http") and ((w.isdigit() and int(w) >= 500) or "large" in src):
+                cover = src
+                break
+
+    main = _pick_main(soup)
+    content_html, text = _blockify(main, soup)
+    quality = _quality(text)
+    if not desc and text:
+        desc = text[:160].replace("\n", " ")
+    return {"title": title, "author": author, "cover": cover,
+            "published": published, "content_html": content_html,
+            "excerpt": desc[:300], "quality": quality}
 
 
 async def parse_video(url: str) -> dict:
@@ -183,4 +430,5 @@ async def parse_video(url: str) -> dict:
         return await parse_generic(resp.text, url)
     except Exception:
         return {"title": url[:80], "author": "", "cover": "",
-                "published": "", "content_html": "", "excerpt": "视频链接（未抓取到元信息）"}
+                "published": "", "content_html": "",
+                "excerpt": "视频链接（未抓取到元信息）", "quality": "link_only"}
