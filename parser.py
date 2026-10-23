@@ -278,22 +278,105 @@ def _pick_main(soup: BeautifulSoup) -> Tag:
     return soup.body or soup
 
 
-def _blockify(main: Tag, soup: BeautifulSoup) -> tuple[str, str]:
-    """把主体转成干净的段落 HTML，并返回纯文本。"""
+BAD_IMG_HINTS = ("icon", "logo", "sprite", "arrow", "search", "ellipse", "favicon",
+                 "placeholder", "spinner", "loading", "avatar", "flag", "social",
+                 "divider", "bullet", "badge")
+GOOD_IMG_HINTS = ("hero", "banner", "cover", "featured", "single-image", "lead",
+                  "teaser", "thumbnail", "card-image")
+
+
+def _abs_url(base: str, src: str) -> str:
+    """把 //host/x、/path、相对路径统一成绝对 URL。"""
+    src = (src or "").strip()
+    if not src or src.startswith("data:") or src.startswith("javascript:"):
+        return ""
+    if src.startswith("//"):
+        return "https:" + src
+    if src.lower().startswith("http"):
+        return src
+    from urllib.parse import urljoin
+    return urljoin(base, src)
+
+
+def _img_src(img: Tag) -> str:
+    for attr in ("src", "data-src", "data-original", "data-lazy-src",
+                 "data-srcset", "srcset"):
+        v = img.get(attr)
+        if v:
+            return v.split(",")[0].strip().split(" ")[0]
+    parent = img.parent
+    if parent is not None and parent.name == "picture":
+        source = parent.find("source")
+        if source is not None:
+            v = source.get("srcset") or source.get("data-srcset") or ""
+            if v:
+                return v.split(",")[0].strip().split(" ")[0]
+    return ""
+
+
+def _is_bad_image(url: str) -> bool:
+    low = url.lower()
+    if low.endswith(".svg") or low.endswith(".gif"):
+        return True
+    return any(h in low for h in BAD_IMG_HINTS)
+
+
+def pick_cover(soup: BeautifulSoup, base: str, existing: str = "") -> str:
+    """封面兜底：og/JSON-LD 没有时，从正文里挑最像"主图"的一张。
+
+    关键修正：
+    - 相对路径 / 协议相对路径（//cdn/x.jpg）要绝对化，否则前端加载不出来
+    - 跳过图标类图片（第一张往往是 search.svg）
+    - 优先 class/id 带 hero/banner/cover/featured 的图
+    """
+    if existing:
+        fixed = _abs_url(base, existing)
+        if fixed:
+            return fixed
+    best = ""
+    for scope in (_pick_main(soup), soup):
+        for img in scope.find_all("img"):
+            src = _abs_url(base, _img_src(img))
+            if not src or _is_bad_image(src):
+                continue
+            hint = (" ".join(img.get("class") or []) + " " + (img.get("id") or "")).lower()
+            if any(k in hint for k in GOOD_IMG_HINTS):
+                return src
+            w = str(img.get("width") or "").strip()
+            if w.isdigit() and int(w) >= 500:
+                return src
+            if not best:
+                best = src
+        if best:
+            return best
+    return best
+
+
+def _blockify(main: Tag, soup: BeautifulSoup, base: str = "") -> tuple[str, str]:
+    """把主体转成干净的段落 HTML（含正文图片），并返回纯文本。"""
     for t in main.find_all(["script", "style", "link", "iframe", "form", "button", "nav",
                             "aside", "footer", "noscript", "svg"]):
         t.decompose()
     blocks: list[str] = []
-    for el in main.find_all(["h1", "h2", "h3", "p", "li", "blockquote", "figcaption"]):
+    for el in main.find_all(["h1", "h2", "h3", "p", "li", "blockquote", "figcaption", "img"]):
+        if el.name == "img":
+            src = _abs_url(base, _img_src(el))
+            if not src or _is_bad_image(src):
+                continue
+            if len(blocks) >= 120:
+                continue
+            blocks.append(f'<img src="{src}" loading="lazy" alt="">')
+            continue
         txt = el.get_text(" ", strip=True)
         if len(txt) < 20:
             continue
         tag = el.name if el.name in ("h2", "h3", "blockquote") else "p"
         blocks.append(f"<{tag}>{txt}</{tag}>")
-        if len(blocks) >= 120:
+        if len(blocks) >= 160:
             break
     html = "".join(blocks)
-    text = "\n".join(BeautifulSoup(b, "html.parser").get_text(" ", strip=True) for b in blocks)
+    text = "\n".join(BeautifulSoup(b, "html.parser").get_text(" ", strip=True)
+                     for b in blocks if not b.startswith("<img"))
     return html, text
 
 
@@ -390,7 +473,9 @@ async def parse_generic(html: str, url: str) -> dict:
     if title.strip().lower() in ("client challenge", "just a moment...", ""):
         title = url[:80]
 
-    cover = (_meta(soup, "og:image") or _meta(soup, "twitter:image") or _ld_image(ld))
+    cover = (_meta(soup, "og:image") or _meta(soup, "og:image:secure_url")
+             or _meta(soup, "twitter:image") or _ld_image(ld))
+    cover = pick_cover(soup, url, cover)
     desc = _clean_title(_meta(soup, "og:description") or _meta(soup, "description")
                         or _meta(soup, "twitter:description")
                         or _ld_first(ld, ("description", "abstract")))
@@ -414,7 +499,7 @@ async def parse_generic(html: str, url: str) -> dict:
                 break
 
     main = _pick_main(soup)
-    content_html, text = _blockify(main, soup)
+    content_html, text = _blockify(main, soup, url)
     quality = _quality(text)
     if not desc and text:
         desc = text[:160].replace("\n", " ")

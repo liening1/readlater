@@ -97,7 +97,8 @@
   #listView .card:nth-child(n+9){animation-delay:320ms}
   @keyframes cardIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
   .thumb{width:76px;height:76px;border-radius:12px;object-fit:cover;background:#f5f5f7;flex-shrink:0}
-  .thumb.ph{display:flex;align-items:center;justify-content:center;font-size:17px;color:#fff;font-weight:600}
+  .thumb.ph{display:flex;align-items:center;justify-content:center;font-size:17px;color:#fff;font-weight:600;
+    background-image:linear-gradient(135deg, rgba(255,255,255,.28), rgba(0,0,0,.20))}
   .c-article{background:#0071e3}.c-video{background:#ff375f}.c-image{background:#ff9500}.c-web{background:#8e8e93}
   .card-main{flex:1;min-width:0}
   .card-title{font-size:16px;font-weight:600;line-height:1.4;letter-spacing:-.015em;
@@ -124,8 +125,12 @@
     animation:cardIn 300ms var(--ease-out) backwards}
   .gcard .gc-cover{position:relative;aspect-ratio:16/10;background:#f5f5f7;overflow:hidden}
   .gcard .gc-cover img{width:100%;height:100%;object-fit:cover;display:block}
-  .gcard .gc-ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;
-    font-size:32px;color:#fff;font-weight:600}
+  .gcard .gc-ph{width:100%;height:100%;display:flex;flex-direction:column;gap:4px;
+    align-items:center;justify-content:center;
+    font-size:30px;color:#fff;font-weight:600;
+    background-image:linear-gradient(135deg, rgba(255,255,255,.30), rgba(0,0,0,.22))}
+  .gcard .gc-domain{font-size:11px;font-weight:500;opacity:.85;letter-spacing:.02em;max-width:88%;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .gcard .gc-type{position:absolute;left:10px;top:10px;font-size:10.5px;padding:2px 9px;border-radius:980px;
     background:rgba(255,255,255,.92);color:var(--txt);font-weight:500}
   .gcard .gc-pin{position:absolute;right:10px;top:8px;font-size:12px}
@@ -712,11 +717,15 @@ function applyViewMode(){
   if(l) l.classList.toggle('on', viewMode === 'list');
   if(g) g.classList.toggle('on', viewMode === 'grid');
 }
+function domainOf(url){
+  try{ return new URL(url).hostname.replace(/^www\./, ''); }catch(e){ return ''; }
+}
 function cardHTMLFor(it){ return viewMode === 'grid' ? gcardHTML(it) : cardHTML(it); }
 function gcardHTML(it){
   const cover = it.cover
     ? `<img src="${esc(it.cover)}" loading="lazy" data-type="${it.type||'web'}" onerror="phFallback(this)">`
-    : `<div class="gc-ph c-${it.type||'web'}">${TYPE_ICON[it.type]||'链'}</div>`;
+    : `<div class="gc-ph c-${it.type||'web'}">${TYPE_ICON[it.type]||'链'}
+         <span class="gc-domain">${esc(domainOf(it.url))}</span></div>`;
   let acts;
   if(state.deleted){
     acts = `<button class="icon-btn" title="恢复" onclick="event.stopPropagation();restoreItem(${it.id})">↩</button>
@@ -750,7 +759,8 @@ function phFallback(el){
   if(el.closest('.gc-cover')){
     const big = document.createElement('div');
     big.className = 'gc-ph c-' + type;
-    big.textContent = TYPE_ICON[type] || '链';
+    big.innerHTML = (TYPE_ICON[type] || '链') +
+      `<span class="gc-domain">${esc(domainOf(el.getAttribute('src') || ''))}</span>`;
     el.replaceWith(big);
     return;
   }
@@ -1182,6 +1192,11 @@ async function openReader(id){
   const c = document.getElementById('rContent');
   c.innerHTML = it.content_html || `<p>${esc(it.excerpt||'（无正文缓存）')}</p>`;
   c.querySelectorAll('script').forEach(s=>s.remove());
+  // 正文图片：懒加载 + 加载失败自动隐藏（防盗链 / 已失效图片不显示破图）
+  c.querySelectorAll('img').forEach(img=>{
+    img.loading = 'lazy';
+    img.addEventListener('error', ()=>{ img.style.display = 'none'; });
+  });
   document.getElementById('rNote').value = it.note || '';
   renderTags();
   updateReadBtn(it.status);
@@ -1251,6 +1266,10 @@ async function refetchCurrent(){
     document.getElementById('rTitle').textContent = r.item.title;
     document.getElementById('rContent').innerHTML =
       r.item.content_html || '<p>（这篇没有抓到正文）</p>';
+    document.querySelectorAll('#rContent img').forEach(img=>{
+      img.loading = 'lazy';
+      img.addEventListener('error', ()=>{ img.style.display = 'none'; });
+    });
     const qn = document.getElementById('qualityNote');
     qn.style.display = (r.item.quality && r.item.quality !== 'full') ? '' : 'none';
     document.getElementById('qualityLink').href = r.item.url || '#';
